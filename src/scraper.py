@@ -164,20 +164,7 @@ class SEOAnalyzer:
         logger.info("SEOAnalyzer initialized successfully")
 
     async def fetch_serp_results(self, keyword: str, country: Optional[str] = None) -> List[SerpResult]:
-        """
-        Fetch SERP results using the configured API key with rate limiting.
-        
-        Args:
-            keyword: The search keyword to fetch results for
-            country: Optional country code for localized results
-            
-        Returns:
-            List[SerpResult]: List of search results
-            
-        Raises:
-            SerpApiError: If the SERP API request fails or returns invalid data
-            ValueError: If keyword is empty
-        """
+        """Fetch SERP results using the configured API key with rate limiting."""
         await self.rate_limiter.acquire()
 
         if not keyword:
@@ -186,41 +173,49 @@ class SEOAnalyzer:
         country = country or self.default_country
         logger.info(f"Fetching SERP for keyword='{keyword}', country='{country}'")
 
-        # --- ADJUST PARAMS BASED ON YOUR CHOSEN SERP API ---
-        # Params for ValueSERP:
+        # Adjust params based on ValueSERP
         params = {
             'api_key': self.api_key,
             'q': keyword,
-            'location': country,  # ValueSERP uses 'location'
+            'location': country,
             'output': 'json',
-            'num': '10',  # ValueSERP uses string for num
+            'num': '10',
         }
-        # # Params for SerpApi:
-        # params = {
-        #     'api_key': self.api_key,
-        #     'q': keyword,
-        #     'location': country, # SerpApi also uses 'location' or specific location names
-        #     'engine': 'google',
-        #     'google_domain': f'google.{ "com" if country == "us" else country}', # Adjust domain
-        #     'num': 10,
-        # }
+
+        # Initialize response text variable for logging in case of JSON error
+        response_text_for_logging = ""
 
         try:
-            async with httpx.AsyncClient(timeout=45.0) as client:  # Increased timeout
+            async with httpx.AsyncClient(timeout=45.0) as client:
                 response = await client.get(self.serp_api_url, params=params, headers=self.headers)
-                await response.raise_for_status()
-                data = await response.json()
 
+                # Get response text FIRST for debugging potential JSON errors
+                try:
+                     response_text_for_logging = await response.atext()
+                except Exception as text_err:
+                     logger.error(f"Error reading response text from SERP API: {text_err}")
+                     response_text_for_logging = "[Could not read response text]"
+
+                # Now check status code
+                response.raise_for_status() # Still synchronous
+
+                # --- Attempt to decode JSON ---
+                try:
+                    data = json.loads(response_text_for_logging) # Try parsing the text directly
+                except json.JSONDecodeError as json_err:
+                     # Log the problematic text along with the error
+                     logger.error(f"Failed to decode SERP API JSON response: {json_err}. Response Text was: {response_text_for_logging[:1000]}...") # Log first 1000 chars
+                     raise SerpApiError("Invalid JSON response from SERP API")
+
+
+                # --- Proceed with validated JSON data ---
                 if not isinstance(data, dict):
-                    raise SerpApiError(f"Invalid API response format: {type(data)}")
+                    raise SerpApiError(f"Invalid API response format: Expected dict, got {type(data)}")
 
-                # --- ADJUST ERROR CHECKING BASED ON API RESPONSE ---
-                # ValueSERP specific error checking example
                 if data.get("request_info", {}).get("success") is False:
                     error_message = data.get("request_info", {}).get("message", "Unknown API Error")
                     raise SerpApiError(f"SERP API Error: {error_message}")
 
-                # Extract results - ADJUST KEY NAMES BASED ON API
                 organic_results = data.get('organic_results', [])
                 if not organic_results:
                     logger.warning(f"No organic results found for '{keyword}' in '{country}'.")
@@ -228,7 +223,6 @@ class SEOAnalyzer:
 
                 results = []
                 for result in organic_results:
-                    # Adjust keys like 'link'/'url', 'snippet'/'description' based on API
                     url_key = 'link' if 'link' in result else 'url'
                     if result.get(url_key) and result.get('title'):
                         results.append(SerpResult(
@@ -237,11 +231,12 @@ class SEOAnalyzer:
                             snippet=result.get('snippet')
                         ))
                     else:
-                        logger.warning(f"Skipping SERP result with missing URL or title: {result}")
+                         logger.warning(f"Skipping SERP result with missing URL or title: {result}")
 
                 logger.info(f"Successfully fetched {len(results)} SERP results.")
-                return results[:10]  # Ensure only top 10
+                return results[:10]
 
+        # --- Keep existing exception handlers ---
         except httpx.TimeoutException:
             logger.error("Request timed out while fetching SERP results")
             raise SerpApiError("Request timed out while fetching SERP results")
@@ -249,18 +244,20 @@ class SEOAnalyzer:
             logger.error(f"Network error while fetching SERP results: {e}")
             raise SerpApiError(f"Network error while fetching SERP results: {e}")
         except httpx.HTTPStatusError as e:
-            logger.error(f"HTTP error {e.response.status_code} fetching SERP: {e}")
-            if e.response.status_code == 401:
-                raise SerpApiError("Invalid SERP API key")
-            if e.response.status_code == 429:
-                raise SerpApiError("SERP API rate limit exceeded")
+            logger.error(f"HTTP error {e.response.status_code} fetching SERP: {e}. Response text: {response_text_for_logging[:500]}")
+            # Check specific status codes BEFORE the generic SerpApiError
+            if e.response.status_code == 401: raise SerpApiError("Invalid SERP API key")
+            if e.response.status_code == 429: raise SerpApiError("SERP API rate limit exceeded")
             raise SerpApiError(f"HTTP error {e.response.status_code} fetching SERP results")
-        except (json.JSONDecodeError, TypeError) as e:
-            logger.error(f"Failed to decode SERP API JSON response: {e}")
-            raise SerpApiError("Invalid JSON response from SERP API")
+        # The SerpApiError raised above for bad JSON or API errors will be caught here if not handled more specifically
+        except SerpApiError as e:
+            # Re-raise known API errors to be handled in main.py
+             logger.error(f"Caught specific SerpApiError: {e}")
+             raise e
         except Exception as e:
-            logger.error(f"Unexpected error fetching SERP results: {e}", exc_info=True)
-            raise SerpApiError(f"Unexpected error fetching SERP results: {e}")
+            # Catch any other unexpected error during SERP processing
+            logger.error(f"Unexpected error processing SERP results: {e}. Response text was: {response_text_for_logging[:500]}", exc_info=True)
+            raise SerpApiError(f"Unexpected error processing SERP results: {e}")
 
     async def fetch_page_content(self, url: str) -> Optional[str]:
         """Fetch HTML content from a URL with caching."""

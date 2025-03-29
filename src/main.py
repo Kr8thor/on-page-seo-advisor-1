@@ -2,7 +2,7 @@
 FastAPI application for the On-Page SEO Analyzer & Advisor.
 Provides endpoints for analyzing web pages and generating SEO recommendations.
 """
-
+import httpx
 import uuid
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -107,10 +107,9 @@ async def analyze_page(
         # Perform analysis
         logger.info(f"[{request_id}] Starting analysis for {request.url}")
         analysis = await analyzer.analyze_page_with_benchmarks(
-            str(request.url),
-            request.keyword,
-            request.country,
-            request.max_competitors
+            url=str(request.url),
+            keyword=request.keyword,
+            country=request.country
         )
         
         # Check analysis status

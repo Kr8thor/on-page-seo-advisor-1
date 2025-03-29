@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+python-dotenv
+httpx
+parsel
+readability-lxml
+textstat
+lxml_html_clean

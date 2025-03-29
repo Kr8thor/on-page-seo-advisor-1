@@ -1,6 +1,6 @@
 import asyncio
-from analyzer import SEOAnalyzer
-from models import SerpResult
+from src.analyzer import SEOAnalyzer
+from src.models import SerpResult
 
 async def test_serp_api():
     """Test the SERP API integration."""

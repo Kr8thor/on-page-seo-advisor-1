@@ -182,30 +182,34 @@ class SEOAnalyzer:
             'num': '10',
         }
 
-        # Initialize response text variable for logging in case of JSON error
-        response_text_for_logging = ""
+        response_for_logging = None # To hold response object for logging on error
 
         try:
             async with httpx.AsyncClient(timeout=45.0) as client:
                 response = await client.get(self.serp_api_url, params=params, headers=self.headers)
+                response_for_logging = response # Store response for potential error logging
 
-                # Get response text FIRST for debugging potential JSON errors
+                # Check status code FIRST
+                response.raise_for_status() # Synchronous is correct here
+
+                # --- Attempt to decode JSON using response.json() ---
                 try:
-                     response_text_for_logging = await response.atext()
-                except Exception as text_err:
-                     logger.error(f"Error reading response text from SERP API: {text_err}")
-                     response_text_for_logging = "[Could not read response text]"
-
-                # Now check status code
-                response.raise_for_status() # Still synchronous
-
-                # --- Attempt to decode JSON ---
-                try:
-                    data = json.loads(response_text_for_logging) # Try parsing the text directly
+                    # response.json() handles async reading and decoding
+                    data = await response.json()
                 except json.JSONDecodeError as json_err:
-                     # Log the problematic text along with the error
-                     logger.error(f"Failed to decode SERP API JSON response: {json_err}. Response Text was: {response_text_for_logging[:1000]}...") # Log first 1000 chars
+                     # If response.json() fails, try to log the raw text if possible
+                     raw_text = "[Could not read response text]"
+                     try:
+                         # Attempt to read text synchronously AFTER error for logging
+                         raw_text = response.text
+                     except Exception:
+                          pass # Ignore if reading text also fails
+                     logger.error(f"Failed to decode SERP API JSON response: {json_err}. Response Text approx: {raw_text[:1000]}...")
                      raise SerpApiError("Invalid JSON response from SERP API")
+                except Exception as e:
+                     # Catch other potential errors during .json() call
+                     logger.error(f"Error calling response.json(): {e}", exc_info=True)
+                     raise SerpApiError(f"Error processing SERP API response: {e}")
 
 
                 # --- Proceed with validated JSON data ---
@@ -236,7 +240,6 @@ class SEOAnalyzer:
                 logger.info(f"Successfully fetched {len(results)} SERP results.")
                 return results[:10]
 
-        # --- Keep existing exception handlers ---
         except httpx.TimeoutException:
             logger.error("Request timed out while fetching SERP results")
             raise SerpApiError("Request timed out while fetching SERP results")
@@ -244,19 +247,28 @@ class SEOAnalyzer:
             logger.error(f"Network error while fetching SERP results: {e}")
             raise SerpApiError(f"Network error while fetching SERP results: {e}")
         except httpx.HTTPStatusError as e:
-            logger.error(f"HTTP error {e.response.status_code} fetching SERP: {e}. Response text: {response_text_for_logging[:500]}")
-            # Check specific status codes BEFORE the generic SerpApiError
+            # Log response text if available on HTTP error
+            error_text = "[Could not read response text]"
+            if response_for_logging:
+                 try:
+                     error_text = response_for_logging.text
+                 except Exception:
+                     pass
+            logger.error(f"HTTP error {e.response.status_code} fetching SERP: {e}. Response text: {error_text[:500]}")
             if e.response.status_code == 401: raise SerpApiError("Invalid SERP API key")
             if e.response.status_code == 429: raise SerpApiError("SERP API rate limit exceeded")
             raise SerpApiError(f"HTTP error {e.response.status_code} fetching SERP results")
-        # The SerpApiError raised above for bad JSON or API errors will be caught here if not handled more specifically
         except SerpApiError as e:
-            # Re-raise known API errors to be handled in main.py
              logger.error(f"Caught specific SerpApiError: {e}")
-             raise e
+             raise e # Re-raise to be handled by main.py
         except Exception as e:
-            # Catch any other unexpected error during SERP processing
-            logger.error(f"Unexpected error processing SERP results: {e}. Response text was: {response_text_for_logging[:500]}", exc_info=True)
+            error_text = "[Could not read response text]"
+            if response_for_logging:
+                 try:
+                     error_text = response_for_logging.text
+                 except Exception:
+                     pass
+            logger.error(f"Unexpected error processing SERP results: {e}. Response text was: {error_text[:500]}", exc_info=True)
             raise SerpApiError(f"Unexpected error processing SERP results: {e}")
 
     async def fetch_page_content(self, url: str) -> Optional[str]:

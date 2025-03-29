@@ -272,7 +272,7 @@ class SEOAnalyzer:
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.get(url, headers=self.headers)
-                await response.raise_for_status()
+                # response.raise_for_status()  # Temporarily commented out for debugging
 
                 # Check content type
                 content_type = response.headers.get('content-type', '')

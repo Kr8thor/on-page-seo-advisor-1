@@ -15,8 +15,8 @@ import logging
 from datetime import datetime
 import json
 from pathlib import Path
-from .scraper import SEOAnalyzer, SerpApiError
-from .models import AnalysisRequest, AnalysisResponse
+from src.scraper import SEOAnalyzer, SerpApiError
+from src.models import AnalysisRequest, AnalysisResponse
 
 # Load environment variables
 load_dotenv()

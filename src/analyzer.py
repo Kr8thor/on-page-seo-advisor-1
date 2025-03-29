@@ -9,7 +9,7 @@ import re
 import os
 from dotenv import load_dotenv
 from statistics import mean, median
-from .models import (
+from src.models import (
     SerpResult, TitleAnalysis, MetaDescriptionAnalysis,
     HeadingsAnalysis, ContentAnalysis, LinksAnalysis,
     ImagesAnalysis, SchemaAnalysis, PageAnalysis

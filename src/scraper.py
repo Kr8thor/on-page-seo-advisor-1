@@ -188,14 +188,12 @@ class SEOAnalyzer:
             async with httpx.AsyncClient(timeout=45.0) as client:
                 response = await client.get(self.serp_api_url, params=params, headers=self.headers)
                 response_for_logging = response # Store response for potential error logging
-
-                # Check status code FIRST
                 response.raise_for_status() # Synchronous is correct here
 
                 # --- Attempt to decode JSON using response.json() ---
                 try:
-                    # response.json() handles async reading and decoding
-                    data = await response.json()
+                    # response.json() is SYNCHRONOUS - REMOVE AWAIT
+                    data = response.json()
                 except json.JSONDecodeError as json_err:
                      # If response.json() fails, try to log the raw text if possible
                      raw_text = "[Could not read response text]"
@@ -211,10 +209,9 @@ class SEOAnalyzer:
                      logger.error(f"Error calling response.json(): {e}", exc_info=True)
                      raise SerpApiError(f"Error processing SERP API response: {e}")
 
-
                 # --- Proceed with validated JSON data ---
                 if not isinstance(data, dict):
-                    raise SerpApiError(f"Invalid API response format: Expected dict, got {type(data)}")
+                     raise SerpApiError(f"Invalid API response format: Expected dict, got {type(data)}")
 
                 if data.get("request_info", {}).get("success") is False:
                     error_message = data.get("request_info", {}).get("message", "Unknown API Error")

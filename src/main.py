@@ -16,7 +16,7 @@ from datetime import datetime
 import json
 from pathlib import Path
 from src.scraper import SEOAnalyzer, SerpApiError
-from src.models import AnalysisRequest, AnalysisResponse
+from src.models import AnalysisRequest, AnalysisResponse, PageAnalysis
 
 # Load environment variables
 load_dotenv()
@@ -123,19 +123,35 @@ async def analyze_page(
                 detail=error_msg
             )
             
+        # Prepare successful response Pydantic model
+        try:
+            response_payload = AnalysisResponse(
+                input=request,
+                # Cast the analysis dict back to PageAnalysis model before assigning
+                analysis=PageAnalysis(**analysis.get("analysis", {})),
+                competitor_analysis_summary=analysis.get("competitor_analysis_summary"),
+                status="success",
+                error_message=analysis.get("warning")  # Assign warning if present
+            )
+        except Exception as model_error:
+            # Handle potential errors during model creation/validation
+            logger.error(f"[{request_id}] Error creating response model: {model_error}", exc_info=True)
+            raise HTTPException(status_code=500, detail="Internal error processing analysis results.")
+            
         # Save results to file
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         # Use a unique part of the request ID for the filename if available
         safe_request_id = request_id.split('-')[0] if request_id else timestamp
         result_file = RESULTS_DIR / f"analysis_{safe_request_id}_{timestamp}.json"
+        # Pass the Pydantic model instance
         background_tasks.add_task(
             save_analysis_results,
             result_file,
-            analysis
+            response_payload
         )
         
         logger.info(f"[{request_id}] Analysis completed successfully")
-        return analysis
+        return response_payload  # Return the Pydantic model (FastAPI handles serialization)
         
     except SerpApiError as e:
         error_msg = str(e)
@@ -200,15 +216,16 @@ async def health_check():
         }
     }
 
-def save_analysis_results(file_path: Path, analysis_data: Dict[str, Any]):
-    """Save analysis results to a JSON file."""
+def save_analysis_results(file_path: Path, response_model: AnalysisResponse):
+    """Save analysis results (as Pydantic model) to a JSON file."""
     try:
         with open(file_path, 'w', encoding='utf-8') as f:
-            # Dump the dictionary directly - NO .dict() call needed
-            json.dump(analysis_data, f, indent=2, ensure_ascii=False)
+            # Convert Pydantic model to JSON-compatible dict
+            json_compatible_data = response_model.model_dump(mode='json', exclude_unset=True)
+            json.dump(json_compatible_data, f, indent=2, ensure_ascii=False)
         logger.info(f"Analysis results saved to {file_path}")
     except Exception as e:
-        logger.error(f"Error saving analysis results to {file_path}: {e} (Data type: {type(analysis_data)})", exc_info=True)
+        logger.error(f"Error saving analysis results to {file_path}: {e}", exc_info=True)
 
 # Custom OpenAPI schema
 def custom_openapi():

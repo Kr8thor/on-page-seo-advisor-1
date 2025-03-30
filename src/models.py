@@ -69,20 +69,41 @@ class SchemaAnalysis(BaseModel):
     types_found: List[str] = []
     schema_data: List[Dict[str, Any]] = []
 
+class PerformanceAnalysis(BaseModel):
+    """Analysis results for page performance metrics."""
+    html_size: Optional[int] = None  # Bytes
+    text_html_ratio: Optional[float] = None  # Percentage or ratio
+    # Add other potential fields later if needed:
+    # css_file_count: Optional[int] = None
+    # js_file_count: Optional[int] = None
+
 # --- Define Main Page Analysis Model LAST (among these) ---
 
 class PageAnalysis(BaseModel):
-    """Detailed analysis results for a single page."""
+    """
+    Main model for page analysis results.
+    
+    This model represents the complete analysis of a web page, including:
+    - Basic page elements (title, meta description)
+    - Content structure (headings, main content)
+    - Technical elements (links, images, schema)
+    - Mobile optimization (viewport)
+    - URL structure (canonical)
+    - Performance metrics
+    """
     url: str
-    title: Optional[TitleAnalysis] = None
-    meta_description: Optional[MetaDescriptionAnalysis] = None
-    headings: Optional[HeadingsAnalysis] = None
-    content: Optional[ContentAnalysis] = None
-    links: Optional[LinksAnalysis] = None
-    images: Optional[ImagesAnalysis] = None
-    schema: Optional[SchemaAnalysis] = None
-    viewport_content: Optional[str] = None
-    canonical_url: Optional[str] = None
+    title: TitleAnalysis
+    meta_description: MetaDescriptionAnalysis
+    headings: HeadingsAnalysis
+    content: ContentAnalysis
+    links: LinksAnalysis
+    images: ImagesAnalysis
+    schema: SchemaAnalysis
+    viewport_content: Optional[str] = Field(None, description="Content attribute of the viewport meta tag.")
+    canonical_url: Optional[str] = Field(None, description="Absolute URL found in the canonical link tag.")
+    performance: Optional[PerformanceAnalysis] = None
+    benchmarks: Optional[Dict[str, Any]] = None
+    recommendations: Optional[List[Dict[str, str]]] = None
 
     class Config:
         json_schema_extra = {
@@ -96,11 +117,57 @@ class PageAnalysis(BaseModel):
                 },
                 "meta_description": {
                     "text": "Example meta description",
-                    "length": 30,
+                    "length": 25,
                     "keyword_present": True
                 },
+                "headings": {
+                    "h1": [{"level": 1, "text": "Main Heading", "contains_keyword": True}],
+                    "h2": [{"level": 2, "text": "Subheading", "contains_keyword": False}],
+                    "h3": [],
+                    "h1_count": 1,
+                    "h1_contains_keyword": True,
+                    "h2_keywords": []
+                },
+                "content": {
+                    "word_count": 500,
+                    "keyword_count": 5,
+                    "keyword_density": 1.0,
+                    "readability": {
+                        "flesch_reading_ease": 65.0,
+                        "flesch_kincaid_grade": 8.0,
+                        "gunning_fog": 12.0,
+                        "smog_index": 10.0,
+                        "automated_readability_index": 8.0,
+                        "coleman_liau_index": 8.0,
+                        "linsear_write_formula": 8.0,
+                        "dale_chall_readability_score": 7.0
+                    }
+                },
+                "links": {
+                    "total_links": 10,
+                    "internal_links": 7,
+                    "external_links": 3,
+                    "broken_links": []
+                },
+                "images": {
+                    "image_count": 5,
+                    "alts_missing": 2,
+                    "alts_with_keyword": 1,
+                    "images": [
+                        {"src": "https://example.com/image1.jpg", "alt": "Example image 1"},
+                        {"src": "https://example.com/image2.jpg", "alt": ""}
+                    ]
+                },
+                "schema": {
+                    "types_found": ["Article", "WebPage"],
+                    "schema_data": []
+                },
                 "viewport_content": "width=device-width, initial-scale=1.0",
-                "canonical_url": "https://example.com/canonical-page"
+                "canonical_url": "https://example.com/canonical-page",
+                "performance": {
+                    "html_size": 50000,
+                    "text_html_ratio": 75.5
+                }
             }
         }
 
@@ -161,7 +228,11 @@ class AnalysisResponse(BaseModel):
                         "keyword_present": True
                     },
                     "viewport_content": "width=device-width, initial-scale=1.0",
-                    "canonical_url": "https://example.com/canonical-page"
+                    "canonical_url": "https://example.com/canonical-page",
+                    "performance": {
+                        "html_size": 150000,
+                        "text_html_ratio": 0.75
+                    }
                 },
                 "competitor_analyses": [],
                 "benchmarks": {

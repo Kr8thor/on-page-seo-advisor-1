@@ -76,7 +76,7 @@ analyzer = SEOAnalyzer()
 async def analyze_page(
     request: AnalysisRequest,
     background_tasks: BackgroundTasks,
-    request_id: str = Header(None)
+    request_id: str = Header(None)  # Accept request_id from header if provided
 ):
     """
     Analyze a web page for SEO optimization.
@@ -114,7 +114,8 @@ async def analyze_page(
         analysis = await analyzer.analyze_page_with_benchmarks(
             url=str(request.url),
             keyword=request.keyword,
-            country=request.country
+            country=request.country,
+            request_id=request_id  # Pass the request ID
         )
         
         # Check analysis status

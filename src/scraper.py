@@ -926,12 +926,19 @@ class SEOAnalyzer:
         url: str,
         keyword: str,
         country: Optional[str] = None,
-        max_competitors: int = 3
+        max_competitors: int = 10,
+        request_id: str = 'N/A'  # Add request_id parameter with a default
     ) -> Dict[str, Any]:
         """
         Orchestrates the full analysis. Returns a dictionary suitable for API response.
+        
+        Args:
+            url: The URL to analyze
+            keyword: The target keyword for analysis
+            country: Optional country code for SERP results
+            max_competitors: Maximum number of competitors to analyze
+            request_id: Unique identifier for request tracing and logging
         """
-        request_id = context_var_request_id.get('N/A')  # Get request ID
         logger.info(f"[{request_id}] Starting comprehensive analysis for {url}")
         cache_key_segment = f"{keyword}_{country or self.default_country}"
 

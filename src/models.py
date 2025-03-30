@@ -119,9 +119,20 @@ class SerpResult(BaseModel):
 
 class AnalysisRequest(BaseModel):
     """Request model for page analysis."""
-    url: HttpUrl
-    keyword: str
+    url: HttpUrl = Field(..., description="The URL of the page to analyze")
+    keyword: str = Field(..., description="The main keyword to analyze for")
+    country: Optional[str] = Field('us', description="Optional: Two-letter country code for SERP analysis (e.g., 'us', 'gb', 'de')")
     max_competitors: int = Field(default=10, ge=1, le=20)
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "url": "https://example.com",
+                "keyword": "seo tools",
+                "country": "us",
+                "max_competitors": 10
+            }
+        }
 
 class AnalysisResponse(BaseModel):
     """Response model for page analysis."""

@@ -125,17 +125,22 @@ async def analyze_page(
             
         # Prepare successful response Pydantic model
         try:
+            # Extract the nested analysis dictionary
+            target_analysis_data = analysis.get("analysis", {})
+            
+            # Create the response model with proper validation
             response_payload = AnalysisResponse(
                 input=request,
-                # Cast the analysis dict back to PageAnalysis model before assigning
-                analysis=PageAnalysis(**analysis.get("analysis", {})),
+                # Pydantic will validate this dictionary against the PageAnalysis model fields
+                analysis=PageAnalysis(**target_analysis_data),
                 competitor_analysis_summary=analysis.get("competitor_analysis_summary"),
                 status="success",
                 error_message=analysis.get("warning")  # Assign warning if present
             )
         except Exception as model_error:
-            # Handle potential errors during model creation/validation
-            logger.error(f"[{request_id}] Error creating response model: {model_error}", exc_info=True)
+            logger.error(f"[{request_id}] Error creating response model from analysis results: {model_error}", exc_info=True)
+            # Log the problematic dictionary for debugging
+            logger.debug(f"Data passed to PageAnalysis constructor: {analysis.get('analysis', {})}")
             raise HTTPException(status_code=500, detail="Internal error processing analysis results.")
             
         # Save results to file
@@ -143,15 +148,15 @@ async def analyze_page(
         # Use a unique part of the request ID for the filename if available
         safe_request_id = request_id.split('-')[0] if request_id else timestamp
         result_file = RESULTS_DIR / f"analysis_{safe_request_id}_{timestamp}.json"
-        # Pass the Pydantic model instance
+        # Pass the full AnalysisResponse model
         background_tasks.add_task(
             save_analysis_results,
             result_file,
             response_payload
         )
         
-        logger.info(f"[{request_id}] Analysis completed successfully")
-        return response_payload  # Return the Pydantic model (FastAPI handles serialization)
+        logger.info(f"[{request_id}] Successfully completed analysis for {request.url}")
+        return response_payload  # Return the Pydantic model
         
     except SerpApiError as e:
         error_msg = str(e)

@@ -22,7 +22,7 @@ import statistics
 from src.models import (
     SerpResult, TitleAnalysis, MetaDescriptionAnalysis, HeadingDetail,
     HeadingsAnalysis, ContentAnalysis, LinksAnalysis,
-    ImagesAnalysis, SchemaAnalysis, PageAnalysis
+    ImagesAnalysis, SchemaAnalysis, PageAnalysis, PerformanceAnalysis
 )
 
 # Load environment variables
@@ -757,6 +757,16 @@ class SEOAnalyzer:
                 if text.strip()
             ])
 
+            # Calculate performance metrics
+            html_size_bytes = len(html_content.encode('utf-8')) if html_content else 0
+            text_size_bytes = len(content.encode('utf-8')) if content else 0
+            text_ratio = (text_size_bytes / html_size_bytes) if html_size_bytes > 0 else 0.0
+
+            performance_analysis = PerformanceAnalysis(
+                html_size=html_size_bytes,
+                text_html_ratio=round(text_ratio * 100, 2)  # Store as percentage
+            )
+
             # Calculate readability metrics
             readability_metrics = {
                 'flesch_reading_ease': textstat.flesch_reading_ease(content),
@@ -786,12 +796,6 @@ class SEOAnalyzer:
                 'title_starts_with_keyword': title_lower.startswith(keyword_lower),
                 'meta_contains_keyword': keyword_lower in meta_lower,
                 'url_contains_keyword': keyword_lower in url.lower(),
-            }
-
-            # Performance metrics (simplified)
-            performance = {
-                'html_size': len(html_content),
-                'text_html_ratio': len(content) / len(html_content) if html_content and len(html_content) > 0 else 0,
             }
 
             # Create analysis objects
@@ -856,9 +860,9 @@ class SEOAnalyzer:
                 links=links_analysis,
                 images=images_analysis,
                 schema=schema_analysis,
-                performance=performance,
                 viewport_content=viewport_content,
-                canonical_url=canonical_url
+                canonical_url=canonical_url,
+                performance=performance_analysis
             )
 
             return {
@@ -1097,11 +1101,19 @@ class SEOAnalyzer:
         # Performance recommendations
         try:
             if target_analysis.performance:
-                text_ratio = target_analysis.performance.get('text_html_ratio', 0)
-                if text_ratio < 0.2:
+                html_size = target_analysis.performance.html_size
+                text_ratio = target_analysis.performance.text_html_ratio
+                
+                if html_size and html_size > 500 * 1024:  # > 500KB
                     recommendations.append({
-                        'text': f"Text-to-HTML ratio is low ({text_ratio:.1%}). Consider reducing HTML markup and increasing content density.",
-                        'severity': 'medium'
+                        'text': f'HTML size ({html_size / 1024:.0f} KB) seems large. Review for unnecessary code or large inline elements.',
+                        'severity': 'low'
+                    })
+                
+                if text_ratio and text_ratio < 10:  # < 10% text
+                    recommendations.append({
+                        'text': f'Text-to-HTML ratio ({text_ratio:.1f}%) is low. Ensure sufficient textual content relative to code.',
+                        'severity': 'low'
                     })
         except Exception as e:
             logger.error(f"Error generating performance recommendations: {e}")

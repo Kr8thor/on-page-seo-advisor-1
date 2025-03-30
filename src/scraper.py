@@ -755,270 +755,179 @@ class SEOAnalyzer:
     def benchmark_analysis(self, target_analysis: PageAnalysis, competitor_analyses: List[PageAnalysis]) -> Dict[str, Any]:
         """
         Calculates benchmark metrics based on competitor data.
-        
+
         Args:
-            target_analysis: The PageAnalysis object for the target URL
-            competitor_analyses: List of PageAnalysis objects for competitors
-            
+            target_analysis: The PageAnalysis object for the target URL.
+            competitor_analyses: A list of PageAnalysis objects for competitors.
+
         Returns:
-            Dict[str, Any]: Dictionary containing:
-                - Original target analysis data
-                - benchmarks: Dictionary of calculated metrics with averages and medians
+            A dictionary containing only the calculated benchmark metrics.
         """
-        logger.info(f"Benchmarking {target_analysis.url} against {len(competitor_analyses)} competitors")
+        logger.info(f"Benchmarking {target_analysis.url} against {len(competitor_analyses)} competitors.")
 
         benchmarks: Dict[str, Dict[str, Optional[float]]] = {}
-
         if not competitor_analyses:
             logger.warning("No competitor analyses available for benchmarking.")
-            target_analysis_dict = target_analysis.dict()
-            target_analysis_dict['benchmarks'] = benchmarks
-            return target_analysis_dict
+            return benchmarks
 
-        # Define metrics to benchmark and their paths within PageAnalysis object
+        # Define metrics to benchmark
         metrics_to_benchmark = {
-            'title_length': ('title', 'length'),
-            'meta_description_length': ('meta_description', 'length'),
-            'h1_count': ('headings', 'h1_count'),
-            'word_count': ('content', 'word_count'),
-            'readability_score': ('content', 'readability_score'),
-            'keyword_density': ('content', 'keyword_density'),
-            'internal_links': ('links', 'internal_links'),
-            'external_links': ('links', 'external_links'),
-            'image_count': ('images', 'image_count'),
-            'images_alts_missing': ('images', 'alts_missing')
+            'title_length': lambda x: x.title.length if x.title else 0,
+            'meta_description_length': lambda x: x.meta_description.length if x.meta_description else 0,
+            'word_count': lambda x: x.content.word_count if x.content else 0,
+            'heading_count': lambda x: len(x.headings) if x.headings else 0,
+            'image_count': lambda x: len(x.images) if x.images else 0,
+            'link_count': lambda x: len(x.links) if x.links else 0
         }
 
-        for key, path_tuple in metrics_to_benchmark.items():
-            values = []
+        # Calculate benchmarks for each metric
+        for metric_name, metric_func in metrics_to_benchmark.items():
+            competitor_values = []
             for comp_analysis in competitor_analyses:
-                current_val = comp_analysis
-                valid_path = True
-                # Safely navigate the nested attribute path
-                for attr in path_tuple:
-                    if hasattr(current_val, attr):
-                        current_val = getattr(current_val, attr)
-                        if current_val is None:
-                            valid_path = False
-                            break
-                    else:
-                        valid_path = False
-                        break
-
-                if valid_path and isinstance(current_val, (int, float)):
-                    values.append(current_val)
-
-            if values:
                 try:
-                    avg = round(statistics.mean(values), 2)
-                except statistics.StatisticsError:
-                    avg = None
+                    value = metric_func(comp_analysis)
+                    if value is not None:
+                        competitor_values.append(value)
+                except Exception as e:
+                    logger.warning(f"Error calculating {metric_name} for competitor {comp_analysis.url}: {e}")
+                    continue
 
-                try:
-                    median = round(statistics.median(values), 2)
-                except statistics.StatisticsError:
-                    median = None
-
-                if avg is not None or median is not None:
-                    benchmarks[key] = {'avg': avg, 'median': median}
-                    logger.debug(f"Calculated benchmark for '{key}': avg={avg}, median={median}")
+            if competitor_values:
+                benchmarks[metric_name] = {
+                    'avg': sum(competitor_values) / len(competitor_values),
+                    'median': sorted(competitor_values)[len(competitor_values) // 2]
+                }
             else:
-                logger.debug(f"No valid data found for benchmarking metric '{key}' among competitors.")
+                benchmarks[metric_name] = {'avg': None, 'median': None}
 
-        # Convert PageAnalysis object to dict, add benchmarks, return dict
-        target_analysis_dict = target_analysis.dict(exclude_unset=True)  # Use exclude_unset just in case
-        # +++ ADD LOGGING +++
-        logger.debug(f"Dictionary created by target_analysis.dict(): Keys = {list(target_analysis_dict.keys())}")
-        if 'url' not in target_analysis_dict:
-            logger.error("CRITICAL: 'url' key missing immediately after target_analysis.dict() call!")
-        # +++ END LOGGING +++
-        target_analysis_dict['benchmarks'] = benchmarks
         logger.info(f"Finished benchmarking. Calculated {len(benchmarks)} benchmark metrics.")
+        return benchmarks
 
-        return target_analysis_dict
-
-    def generate_recommendations(self, analysis_with_benchmarks: Union[Dict[str, Any], PageAnalysis]) -> List[Dict[str, Any]]:
+    def generate_recommendations(self, target_analysis: PageAnalysis, benchmarks: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
-        Generates actionable SEO recommendations based on analysis and benchmarks.
-        
+        Generates actionable SEO recommendations based on the target analysis object
+        and calculated benchmarks dictionary.
+
         Args:
-            analysis_with_benchmarks: Dictionary or PageAnalysis object containing
-                                    the target page's analysis and benchmark data
-            
+            target_analysis: The PageAnalysis object for the target page.
+            benchmarks: A dictionary containing the calculated benchmark data.
+
         Returns:
-            List[Dict[str, Any]]: List of recommendation dictionaries, each containing:
-                - type: Category of the recommendation (e.g., 'Title', 'Content')
-                - severity: 'High', 'Medium', or 'Low'
-                - text: Detailed recommendation text
+            A list of recommendation dictionaries.
         """
         recommendations: List[Dict[str, Any]] = []
-        analysis = analysis_with_benchmarks.model_dump() if isinstance(analysis_with_benchmarks, PageAnalysis) else analysis_with_benchmarks
-        benchmarks = analysis.get('benchmarks', {})
-        url = analysis.get('url', 'N/A')
+        url = target_analysis.url
         logger.info(f"Generating recommendations for {url}")
 
-        # Helper function to safely get nested values from dict
-        def get_nested(data: Dict, path: List[str], default: Any = None) -> Any:
-            current = data
-            for key in path:
-                if isinstance(current, dict) and key in current:
-                    current = current.get(key)
-                else:
-                    return default
-            return current
-
-        # --- Recommendation Rules ---
-
-        # Title Rules
+        # Title Recommendations
         try:
-            title_data = get_nested(analysis, ['title'], {})
-            title_len = get_nested(title_data, ['length'], 0)
-            title_kw = get_nested(title_data, ['keyword_present'], False)
-            title_pos = get_nested(title_data, ['position'])
-            bm_title_len_avg = get_nested(benchmarks, ['title_length', 'avg'])
-            bm_title_len_med = get_nested(benchmarks, ['title_length', 'median'])
+            title_len = target_analysis.title.length if target_analysis.title else 0
+            bm_title_len_avg = benchmarks.get('title_length', {}).get('avg')
 
             if title_len == 0:
                 recommendations.append({'type': 'Title', 'severity': 'High', 'text': 'Page is missing a Title tag.'})
-            else:
-                if not title_kw:
-                    recommendations.append({'type': 'Title', 'severity': 'High', 'text': 'Primary keyword not found in the Title tag.'})
-                elif title_pos and title_pos not in ['start', 'middle']:
-                     recommendations.append({'type': 'Title', 'severity': 'Low', 'text': f'Keyword found in title, but consider placing it closer to the start (current position: {title_pos}).'})
+            elif bm_title_len_avg is not None and title_len < bm_title_len_avg * 0.8:
+                recommendations.append({
+                    'type': 'Title',
+                    'severity': 'Medium',
+                    'text': f"Title length ({title_len}) is shorter than competitor average ({bm_title_len_avg:.0f}). Consider adding more relevant terms."
+                })
+        except Exception as e:
+            logger.warning(f"Error generating title recommendations: {e}")
 
-                if bm_title_len_avg is not None and title_len < bm_title_len_avg * 0.8:
-                     recommendations.append({'type': 'Title', 'severity': 'Medium', 'text': f"Title length ({title_len}) is shorter than competitor average ({bm_title_len_avg:.0f}). Consider adding more relevant terms."})
-                elif title_len > 65: # General SEO best practice
-                     recommendations.append({'type': 'Title', 'severity': 'Low', 'text': f"Title length ({title_len}) may be truncated in search results (ideal max ~60-65 chars)." })
-        except Exception as e: logger.warning(f"Error generating title recommendations: {e}")
-
-        # Meta Description Rules
+        # Meta Description Recommendations
         try:
-            meta_data = get_nested(analysis, ['meta_description'], {})
-            meta_len = get_nested(meta_data, ['length'], 0)
-            meta_kw = get_nested(meta_data, ['keyword_present'], False)
-            bm_meta_len_avg = get_nested(benchmarks, ['meta_description_length', 'avg'])
+            meta_desc_len = target_analysis.meta_description.length if target_analysis.meta_description else 0
+            bm_meta_desc_len_avg = benchmarks.get('meta_description_length', {}).get('avg')
 
-            if meta_len == 0:
-                 recommendations.append({'type': 'Meta Description', 'severity': 'Medium', 'text': 'Page is missing a Meta Description.'})
-            else:
-                 if not meta_kw:
-                      recommendations.append({'type': 'Meta Description', 'severity': 'Medium', 'text': 'Primary keyword not found in the Meta Description. Include it to improve relevance.'})
-                 if bm_meta_len_avg is not None and meta_len < bm_meta_len_avg * 0.75:
-                     recommendations.append({'type': 'Meta Description', 'severity': 'Low', 'text': f"Meta Description length ({meta_len}) is shorter than competitor average ({bm_meta_len_avg:.0f}). You could elaborate further."})
-                 elif meta_len > 160: # General best practice
-                     recommendations.append({'type': 'Meta Description', 'severity': 'Low', 'text': f"Meta Description length ({meta_len}) may be truncated in search results (ideal max ~155-160 chars)." })
-        except Exception as e: logger.warning(f"Error generating meta description recommendations: {e}")
+            if meta_desc_len == 0:
+                recommendations.append({'type': 'Meta Description', 'severity': 'High', 'text': 'Page is missing a Meta Description.'})
+            elif bm_meta_desc_len_avg is not None and meta_desc_len < bm_meta_desc_len_avg * 0.8:
+                recommendations.append({
+                    'type': 'Meta Description',
+                    'severity': 'Medium',
+                    'text': f"Meta description length ({meta_desc_len}) is shorter than competitor average ({bm_meta_desc_len_avg:.0f}). Consider adding more details."
+                })
+        except Exception as e:
+            logger.warning(f"Error generating meta description recommendations: {e}")
 
-        # Headings Rules
+        # Content Recommendations
         try:
-            h_data = get_nested(analysis, ['headings'], {})
-            h1_count = get_nested(h_data, ['h1_count'], 0)
-            h1_kw = get_nested(h_data, ['h1_contains_keyword'], False)
+            word_count = target_analysis.content.word_count if target_analysis.content else 0
+            bm_word_count_avg = benchmarks.get('word_count', {}).get('avg')
 
-            if h1_count == 0:
-                recommendations.append({'type': 'Headings', 'severity': 'High', 'text': 'Page is missing an H1 heading.'})
-            elif h1_count > 1:
-                recommendations.append({'type': 'Headings', 'severity': 'Medium', 'text': f'Page has multiple H1 headings ({h1_count}). Use only one H1 per page.'})
-            elif not h1_kw: # Only check keyword if exactly one H1 exists
-                recommendations.append({'type': 'Headings', 'severity': 'High', 'text': 'Primary keyword not found in the H1 heading.'})
+            if word_count == 0:
+                recommendations.append({'type': 'Content', 'severity': 'High', 'text': 'Page has no content.'})
+            elif bm_word_count_avg is not None and word_count < bm_word_count_avg * 0.8:
+                recommendations.append({
+                    'type': 'Content',
+                    'severity': 'Medium',
+                    'text': f"Content length ({word_count} words) is shorter than competitor average ({bm_word_count_avg:.0f}). Consider adding more relevant content."
+                })
+        except Exception as e:
+            logger.warning(f"Error generating content recommendations: {e}")
 
-            # Could add rules about H2 count, keyword in H2s, heading structure etc.
-            h2_count = len(get_nested(h_data, ['h2'], []))
-            if h1_count > 0 and h2_count == 0:
-                 recommendations.append({'type': 'Headings', 'severity': 'Low', 'text': 'Consider using H2 headings to structure your content sections.'})
-
-        except Exception as e: logger.warning(f"Error generating heading recommendations: {e}")
-
-        # Content Rules
+        # Heading Structure Recommendations
         try:
-            c_data = get_nested(analysis, ['content'], {})
-            word_count = get_nested(c_data, ['word_count'], 0)
-            readability = get_nested(c_data, ['readability_score'])
-            kw_density = get_nested(c_data, ['keyword_density'], 0.0)
-            kw_count = get_nested(c_data, ['keyword_count'], 0)
+            heading_count = len(target_analysis.headings) if target_analysis.headings else 0
+            bm_heading_count_avg = benchmarks.get('heading_count', {}).get('avg')
 
-            bm_wc_avg = get_nested(benchmarks, ['word_count', 'avg'])
-            bm_read_avg = get_nested(benchmarks, ['readability_score', 'avg'])
-            bm_dens_avg = get_nested(benchmarks, ['keyword_density', 'avg'])
+            if heading_count == 0:
+                recommendations.append({'type': 'Headings', 'severity': 'High', 'text': 'Page has no headings. Add H1-H6 tags to structure your content.'})
+            elif bm_heading_count_avg is not None and heading_count < bm_heading_count_avg * 0.8:
+                recommendations.append({
+                    'type': 'Headings',
+                    'severity': 'Medium',
+                    'text': f"Number of headings ({heading_count}) is lower than competitor average ({bm_heading_count_avg:.0f}). Consider improving content structure."
+                })
+        except Exception as e:
+            logger.warning(f"Error generating heading recommendations: {e}")
 
-            if word_count < 150: # Very low word count generally
-                 recommendations.append({'type': 'Content', 'severity': 'Medium', 'text': f'Content word count ({word_count}) is very low. Consider significant expansion with valuable information.'})
-            elif bm_wc_avg is not None and word_count < bm_wc_avg * 0.7:
-                 recommendations.append({'type': 'Content', 'severity': 'Medium', 'text': f"Word count ({word_count}) is significantly lower than competitor average ({bm_wc_avg:.0f}). Consider adding more depth or related subtopics."})
-
-            # Keyword Density (target range, e.g., 0.5% - 2.5%)
-            if kw_count > 0: # Only assess density if keyword appears at all
-                 if kw_density < 0.5:
-                     recommendations.append({'type': 'Content', 'severity': 'Low', 'text': f'Keyword density ({kw_density:.2f}%) is low. Ensure the primary keyword appears naturally a few more times.'})
-                 elif kw_density > 3.0: # Threshold for potential over-optimization
-                     recommendations.append({'type': 'Content', 'severity': 'Medium', 'text': f'Keyword density ({kw_density:.2f}%) is high. Ensure text reads naturally and avoid keyword stuffing.'})
-            elif kw_count == 0 and word_count > 0: # Keyword not found in body at all
-                 recommendations.append({'type': 'Content', 'severity': 'High', 'text': 'Primary keyword not found in the main page content.'})
-
-            # Readability
-            if readability is not None:
-                # Compare to general guidelines (e.g., Grade 8-10 for general audience) or benchmarks
-                 if readability > 14.0: # Example threshold for very complex text
-                     recommendations.append({'type': 'Content', 'severity': 'Low', 'text': f'Content readability score (FK Grade {readability:.1f}) indicates potentially complex language. Simplify for a broader audience if appropriate.'})
-                 if bm_read_avg is not None and readability > bm_read_avg * 1.2: # More complex than avg competitor
-                     recommendations.append({'type': 'Content', 'severity': 'Low', 'text': f'Content readability score ({readability:.1f}) is higher (more complex) than competitor average ({bm_read_avg:.1f}). Consider simplifying if target audience matches competitors.'})
-
-        except Exception as e: logger.warning(f"Error generating content recommendations: {e}")
-
-        # Images Rules
+        # Image Recommendations
         try:
-            img_data = get_nested(analysis, ['images'], {})
-            img_count = get_nested(img_data, ['image_count'], 0)
-            alts_missing = get_nested(img_data, ['alts_missing'], 0)
-            alts_kw = get_nested(img_data, ['alts_with_keyword'], 0)
+            image_count = len(target_analysis.images) if target_analysis.images else 0
+            bm_image_count_avg = benchmarks.get('image_count', {}).get('avg')
 
-            if img_count > 0 and alts_missing > 0:
-                perc_missing = (alts_missing / img_count) * 100
-                sev = 'High' if perc_missing > 50 else ('Medium' if perc_missing > 20 else 'Low')
-                recommendations.append({'type': 'Images', 'severity': sev, 'text': f'{alts_missing} out of {img_count} images ({perc_missing:.0f}%) are missing descriptive alt text. Add alt text for accessibility and SEO.'})
-            # Add check for keyword in alt text if needed (less critical than missing alts)
-            # if img_count > 0 and alts_kw == 0: recommendations.append(...)
+            if image_count == 0:
+                recommendations.append({'type': 'Images', 'severity': 'Medium', 'text': 'Page has no images. Consider adding relevant images to improve engagement.'})
+            elif bm_image_count_avg is not None and image_count < bm_image_count_avg * 0.8:
+                recommendations.append({
+                    'type': 'Images',
+                    'severity': 'Low',
+                    'text': f"Number of images ({image_count}) is lower than competitor average ({bm_image_count_avg:.0f}). Consider adding more visual content."
+                })
+        except Exception as e:
+            logger.warning(f"Error generating image recommendations: {e}")
 
-        except Exception as e: logger.warning(f"Error generating image recommendations: {e}")
-
-        # Schema Rules
+        # Link Recommendations
         try:
-             schema_data = get_nested(analysis, ['schema'], {})
-             types_found = get_nested(schema_data, ['types_found'], [])
-             if not types_found:
-                 recommendations.append({'type': 'Schema', 'severity': 'Low', 'text': 'No Schema.org markup (JSON-LD) detected. Consider adding relevant schema (e.g., Article, FAQPage) to enhance search appearance.'})
-             # Add checks for specific expected schema based on page type if possible later
-        except Exception as e: logger.warning(f"Error generating schema recommendations: {e}")
+            link_count = len(target_analysis.links) if target_analysis.links else 0
+            bm_link_count_avg = benchmarks.get('link_count', {}).get('avg')
 
-        # Links Rules
-        try:
-            links_data = get_nested(analysis, ['links'], {})
-            internal_links = get_nested(links_data, ['internal_links'], 0)
-            external_links = get_nested(links_data, ['external_links'], 0)
-            total_links = internal_links + external_links
-
-            if total_links == 0:
-                recommendations.append({'type': 'Links', 'severity': 'Medium', 'text': 'No links found on the page. Consider adding relevant internal and external links.'})
-            else:
-                # Check internal vs external link ratio
-                if total_links > 0:
-                    internal_ratio = (internal_links / total_links) * 100
-                    if internal_ratio < 20:
-                        recommendations.append({'type': 'Links', 'severity': 'Medium', 'text': f'Low ratio of internal links ({internal_ratio:.0f}%). Consider adding more internal links to improve site structure.'})
-                    elif internal_ratio > 90:
-                        recommendations.append({'type': 'Links', 'severity': 'Low', 'text': f'Very high ratio of internal links ({internal_ratio:.0f}%). Consider adding some authoritative external links.'})
-
-        except Exception as e: logger.warning(f"Error generating link recommendations: {e}")
+            if link_count == 0:
+                recommendations.append({'type': 'Links', 'severity': 'Medium', 'text': 'Page has no links. Consider adding relevant internal and external links.'})
+            elif bm_link_count_avg is not None and link_count < bm_link_count_avg * 0.8:
+                recommendations.append({
+                    'type': 'Links',
+                    'severity': 'Medium',
+                    'text': f"Number of links ({link_count}) is lower than competitor average ({bm_link_count_avg:.0f}). Consider adding more relevant links."
+                })
+        except Exception as e:
+            logger.warning(f"Error generating link recommendations: {e}")
 
         logger.info(f"Generated {len(recommendations)} recommendations for {url}")
         # Sort recommendations by severity (High > Medium > Low)
         severity_map = {'High': 3, 'Medium': 2, 'Low': 1}
         recommendations.sort(key=lambda x: severity_map.get(x.get('severity', 'Low'), 0), reverse=True)
-
         return recommendations
 
-    async def analyze_page_with_benchmarks(self, url: str, keyword: str, country: Optional[str] = None, max_competitors: int = 3) -> Dict[str, Any]:
+    async def analyze_page_with_benchmarks(
+        self,
+        url: str,
+        keyword: str,
+        country: Optional[str] = None,
+        max_competitors: int = 3
+    ) -> Dict[str, Any]:
         """Analyze a page and benchmark against competitors."""
         try:
             # Fetch SERP results
@@ -1053,13 +962,13 @@ class SEOAnalyzer:
             benchmarks = self.benchmark_analysis(target_analysis, competitor_analyses)
             
             # Generate recommendations
-            recommendations = self.generate_recommendations(target_analysis)
+            recommendations = self.generate_recommendations(target_analysis, benchmarks)
 
             # Prepare final result
             final_result = {
                 'status': 'success',
-                'target_analysis': target_analysis,
-                'competitor_analyses': competitor_analyses,
+                'target_analysis': target_analysis.model_dump(mode='json'),
+                'competitor_analyses': [comp.model_dump(mode='json') for comp in competitor_analyses],
                 'benchmarks': benchmarks,
                 'recommendations': recommendations
             }

@@ -926,120 +926,186 @@ class SEOAnalyzer:
 
     def generate_recommendations(self, target_analysis: PageAnalysis, benchmarks: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
-        Generates actionable SEO recommendations based on the target analysis object
-        and calculated benchmarks dictionary.
-
+        Generate actionable SEO recommendations based on analysis and benchmarks.
+        
         Args:
-            target_analysis: The PageAnalysis object for the target page.
-            benchmarks: A dictionary containing the calculated benchmark data.
-
+            target_analysis: PageAnalysis object for the target page
+            benchmarks: Dictionary containing benchmark metrics
+            
         Returns:
-            A list of recommendation dictionaries.
+            List of recommendation dictionaries with text and severity
         """
-        recommendations: List[Dict[str, Any]] = []
-        url = target_analysis.url
-        logger.info(f"Generating recommendations for {url}")
-
-        # Title Recommendations
+        recommendations = []
+        
+        # Title recommendations
         try:
-            title_len = target_analysis.title.length if target_analysis.title else 0
-            bm_title_len_avg = benchmarks.get('title_length', {}).get('avg')
-
-            if title_len == 0:
-                recommendations.append({'type': 'Title', 'severity': 'High', 'text': 'Page is missing a Title tag.'})
-            elif bm_title_len_avg is not None and title_len < bm_title_len_avg * 0.8:
-                recommendations.append({
-                    'type': 'Title',
-                    'severity': 'Medium',
-                    'text': f"Title length ({title_len}) is shorter than competitor average ({bm_title_len_avg:.0f}). Consider adding more relevant terms."
-                })
+            if target_analysis.title:
+                title_len = len(target_analysis.title.text)
+                bm_title_len_avg = benchmarks.get('title_length', {}).get('average', 0)
+                
+                if title_len < 30:
+                    recommendations.append({
+                        'text': f"Title is too short ({title_len} chars). Aim for 30-60 characters to ensure proper display in search results.",
+                        'severity': 'high'
+                    })
+                elif title_len > 60:
+                    recommendations.append({
+                        'text': f"Title is too long ({title_len} chars). Keep it under 60 characters to avoid truncation in search results.",
+                        'severity': 'high'
+                    })
+                
+                if not target_analysis.title.keyword_present:
+                    recommendations.append({
+                        'text': f"Primary keyword not found in title ('{target_analysis.title.text[:50]}...'). Include it naturally for better SEO.",
+                        'severity': 'high'
+                    })
+                
+                if title_len < bm_title_len_avg:
+                    recommendations.append({
+                        'text': f"Title length ({title_len}) is shorter than competitor average ({bm_title_len_avg:.0f}). Consider adding more relevant terms.",
+                        'severity': 'medium'
+                    })
         except Exception as e:
-            logger.warning(f"Error generating title recommendations: {e}")
-
-        # Meta Description Recommendations
+            logger.error(f"Error generating title recommendations: {e}")
+        
+        # Meta description recommendations
         try:
-            meta_desc_len = target_analysis.meta_description.length if target_analysis.meta_description else 0
-            bm_meta_desc_len_avg = benchmarks.get('meta_description_length', {}).get('avg')
-
-            if meta_desc_len == 0:
-                recommendations.append({'type': 'Meta Description', 'severity': 'High', 'text': 'Page is missing a Meta Description.'})
-            elif bm_meta_desc_len_avg is not None and meta_desc_len < bm_meta_desc_len_avg * 0.8:
-                recommendations.append({
-                    'type': 'Meta Description',
-                    'severity': 'Medium',
-                    'text': f"Meta description length ({meta_desc_len}) is shorter than competitor average ({bm_meta_desc_len_avg:.0f}). Consider adding more details."
-                })
+            if target_analysis.meta_description:
+                meta_len = len(target_analysis.meta_description.text)
+                bm_meta_len_avg = benchmarks.get('meta_description_length', {}).get('average', 0)
+                
+                if meta_len < 120:
+                    recommendations.append({
+                        'text': f"Meta description is too short ({meta_len} chars). Aim for 120-160 characters to provide comprehensive information.",
+                        'severity': 'high'
+                    })
+                elif meta_len > 160:
+                    recommendations.append({
+                        'text': f"Meta description is too long ({meta_len} chars). Keep it under 160 characters to avoid truncation in search results.",
+                        'severity': 'high'
+                    })
+                
+                if not target_analysis.meta_description.keyword_present:
+                    recommendations.append({
+                        'text': f"Primary keyword not found in meta description ('{target_analysis.meta_description.text[:50]}...'). Include it naturally for better visibility.",
+                        'severity': 'high'
+                    })
+                
+                if meta_len < bm_meta_len_avg:
+                    recommendations.append({
+                        'text': f"Meta description length ({meta_len}) is shorter than competitor average ({bm_meta_len_avg:.0f}). Consider adding more relevant content.",
+                        'severity': 'medium'
+                    })
         except Exception as e:
-            logger.warning(f"Error generating meta description recommendations: {e}")
-
-        # Content Recommendations
+            logger.error(f"Error generating meta description recommendations: {e}")
+        
+        # Headings recommendations
         try:
-            word_count = target_analysis.content.word_count if target_analysis.content else 0
-            bm_word_count_avg = benchmarks.get('word_count', {}).get('avg')
-
-            if word_count == 0:
-                recommendations.append({'type': 'Content', 'severity': 'High', 'text': 'Page has no content.'})
-            elif bm_word_count_avg is not None and word_count < bm_word_count_avg * 0.8:
-                recommendations.append({
-                    'type': 'Content',
-                    'severity': 'Medium',
-                    'text': f"Content length ({word_count} words) is shorter than competitor average ({bm_word_count_avg:.0f}). Consider adding more relevant content."
-                })
+            if target_analysis.headings:
+                if not target_analysis.headings.h1:
+                    recommendations.append({
+                        'text': "No H1 heading found. Add a clear, descriptive H1 heading that includes your primary keyword.",
+                        'severity': 'high'
+                    })
+                elif not target_analysis.headings.h1_contains_keyword:
+                    h1_text = target_analysis.headings.h1[0].text if target_analysis.headings.h1 else ""
+                    recommendations.append({
+                        'text': f"Primary keyword not found in the main H1 heading ('{h1_text[:50]}...'). Include it naturally for better SEO.",
+                        'severity': 'high'
+                    })
+                
+                if not target_analysis.headings.h2:
+                    recommendations.append({
+                        'text': "No H2 headings found. Add subheadings to structure your content and improve readability.",
+                        'severity': 'medium'
+                    })
+                elif target_analysis.headings.h2_contains_keyword_count == 0:
+                    recommendations.append({
+                        'text': f"None of your {target_analysis.headings.h2_count} H2 headings contain the primary keyword. Consider adding it naturally to relevant subheadings.",
+                        'severity': 'medium'
+                    })
         except Exception as e:
-            logger.warning(f"Error generating content recommendations: {e}")
-
-        # Heading Structure Recommendations
+            logger.error(f"Error generating headings recommendations: {e}")
+        
+        # Content recommendations
         try:
-            heading_count = len(target_analysis.headings) if target_analysis.headings else 0
-            bm_heading_count_avg = benchmarks.get('heading_count', {}).get('avg')
-
-            if heading_count == 0:
-                recommendations.append({'type': 'Headings', 'severity': 'High', 'text': 'Page has no headings. Add H1-H6 tags to structure your content.'})
-            elif bm_heading_count_avg is not None and heading_count < bm_heading_count_avg * 0.8:
-                recommendations.append({
-                    'type': 'Headings',
-                    'severity': 'Medium',
-                    'text': f"Number of headings ({heading_count}) is lower than competitor average ({bm_heading_count_avg:.0f}). Consider improving content structure."
-                })
+            if target_analysis.content:
+                if target_analysis.content.word_count < 300:
+                    recommendations.append({
+                        'text': f"Content is too short ({target_analysis.content.word_count} words). Aim for at least 300 words to provide comprehensive information.",
+                        'severity': 'high'
+                    })
+                
+                if target_analysis.content.keyword_density < 0.5:
+                    recommendations.append({
+                        'text': f"Keyword density is low ({target_analysis.content.keyword_density:.1f}%). Consider naturally incorporating the primary keyword more frequently.",
+                        'severity': 'medium'
+                    })
+                elif target_analysis.content.keyword_density > 3:
+                    recommendations.append({
+                        'text': f"Keyword density is high ({target_analysis.content.keyword_density:.1f}%). Reduce keyword usage to avoid over-optimization.",
+                        'severity': 'medium'
+                    })
+                
+                # Check readability scores
+                readability = target_analysis.content.readability
+                if readability.get('flesch_reading_ease', 0) < 60:
+                    recommendations.append({
+                        'text': f"Content readability score is low ({readability['flesch_reading_ease']:.0f}). Consider simplifying language and improving structure.",
+                        'severity': 'medium'
+                    })
         except Exception as e:
-            logger.warning(f"Error generating heading recommendations: {e}")
-
-        # Image Recommendations
+            logger.error(f"Error generating content recommendations: {e}")
+        
+        # Images recommendations
         try:
-            image_count = len(target_analysis.images) if target_analysis.images else 0
-            bm_image_count_avg = benchmarks.get('image_count', {}).get('avg')
-
-            if image_count == 0:
-                recommendations.append({'type': 'Images', 'severity': 'Medium', 'text': 'Page has no images. Consider adding relevant images to improve engagement.'})
-            elif bm_image_count_avg is not None and image_count < bm_image_count_avg * 0.8:
-                recommendations.append({
-                    'type': 'Images',
-                    'severity': 'Low',
-                    'text': f"Number of images ({image_count}) is lower than competitor average ({bm_image_count_avg:.0f}). Consider adding more visual content."
-                })
+            if target_analysis.images:
+                img_count = target_analysis.images.image_count
+                alts_missing = target_analysis.images.alts_missing
+                if img_count > 0:
+                    perc_missing = (alts_missing / img_count) * 100
+                    if alts_missing > 0:
+                        recommendations.append({
+                            'text': f"{alts_missing} ({perc_missing:.0f}%) of {img_count} images are missing descriptive alt text. Add relevant alt text for accessibility and SEO.",
+                            'severity': 'high'
+                        })
+                    
+                    if target_analysis.images.alts_with_keyword == 0:
+                        recommendations.append({
+                            'text': f"None of your {img_count} images have alt text containing the primary keyword. Consider adding it naturally to relevant image descriptions.",
+                            'severity': 'medium'
+                        })
         except Exception as e:
-            logger.warning(f"Error generating image recommendations: {e}")
-
-        # Link Recommendations
+            logger.error(f"Error generating images recommendations: {e}")
+        
+        # Schema recommendations
         try:
-            link_count = len(target_analysis.links) if target_analysis.links else 0
-            bm_link_count_avg = benchmarks.get('link_count', {}).get('avg')
-
-            if link_count == 0:
-                recommendations.append({'type': 'Links', 'severity': 'Medium', 'text': 'Page has no links. Consider adding relevant internal and external links.'})
-            elif bm_link_count_avg is not None and link_count < bm_link_count_avg * 0.8:
-                recommendations.append({
-                    'type': 'Links',
-                    'severity': 'Medium',
-                    'text': f"Number of links ({link_count}) is lower than competitor average ({bm_link_count_avg:.0f}). Consider adding more relevant links."
-                })
+            if target_analysis.schema:
+                if not target_analysis.schema.types_found:
+                    recommendations.append({
+                        'text': "No Schema.org markup (JSON-LD) detected. Implementing relevant schema like 'Article' or 'FAQPage' can enhance search appearance.",
+                        'severity': 'medium'
+                    })
+                elif 'Article' not in target_analysis.schema.types_found:
+                    recommendations.append({
+                        'text': f"Consider adding Article schema. Current schema types: {', '.join(target_analysis.schema.types_found)}.",
+                        'severity': 'low'
+                    })
         except Exception as e:
-            logger.warning(f"Error generating link recommendations: {e}")
-
-        logger.info(f"Generated {len(recommendations)} recommendations for {url}")
-        # Sort recommendations by severity (High > Medium > Low)
-        severity_map = {'High': 3, 'Medium': 2, 'Low': 1}
-        recommendations.sort(key=lambda x: severity_map.get(x.get('severity', 'Low'), 0), reverse=True)
+            logger.error(f"Error generating schema recommendations: {e}")
+        
+        # Performance recommendations
+        try:
+            if target_analysis.performance:
+                text_ratio = target_analysis.performance.get('text_html_ratio', 0)
+                if text_ratio < 0.2:
+                    recommendations.append({
+                        'text': f"Text-to-HTML ratio is low ({text_ratio:.1%}). Consider reducing HTML markup and increasing content density.",
+                        'severity': 'medium'
+                    })
+        except Exception as e:
+            logger.error(f"Error generating performance recommendations: {e}")
+        
         return recommendations
 
     async def analyze_page_with_benchmarks(

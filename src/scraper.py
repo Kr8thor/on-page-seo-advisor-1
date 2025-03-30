@@ -1031,7 +1031,7 @@ class SEOAnalyzer:
                 }
 
             # Analyze target page
-            target_analysis = await self.analyze_page(url)
+            target_analysis = await self.analyze_page(url, keyword)
             if not target_analysis:
                 return {
                     'status': 'error',
@@ -1042,7 +1042,7 @@ class SEOAnalyzer:
             competitor_analyses = []
             for result in serp_results[:max_competitors]:
                 try:
-                    analysis = await self.analyze_page(result.url)
+                    analysis = await self.analyze_page(result.url, keyword)
                     if analysis:
                         competitor_analyses.append(analysis)
                 except Exception as e:

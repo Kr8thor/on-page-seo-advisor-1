@@ -129,22 +129,20 @@ async def analyze_page(
             
         # Prepare successful response Pydantic model
         try:
-            # Extract the nested analysis dictionary
-            target_analysis_data = analysis.get("analysis", {})
-            
-            # Create the response model with proper validation
             response_payload = AnalysisResponse(
                 input=request,
-                # Pydantic will validate this dictionary against the PageAnalysis model fields
-                analysis=PageAnalysis(**target_analysis_data),
-                competitor_analysis_summary=analysis.get("competitor_analysis_summary"),
-                status="success",
-                error_message=analysis.get("warning")  # Assign warning if present
+                status=analysis.get('status'),
+                target_analysis=analysis.get('target_analysis'),
+                competitor_analyses=analysis.get('competitor_analyses'),
+                benchmarks=analysis.get('benchmarks'),
+                recommendations=analysis.get('recommendations'),
+                warning=analysis.get('warning'),
+                error_message=None
             )
         except Exception as model_error:
             logger.error(f"[{request_id}] Error creating response model from analysis results: {model_error}", exc_info=True)
             # Log the problematic dictionary for debugging
-            logger.debug(f"Data passed to PageAnalysis constructor: {analysis.get('analysis', {})}")
+            logger.debug(f"Data passed to AnalysisResponse constructor: {analysis}")
             raise HTTPException(status_code=500, detail="Internal error processing analysis results.")
             
         # Save results to file

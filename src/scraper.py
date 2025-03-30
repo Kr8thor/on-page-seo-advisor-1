@@ -1018,140 +1018,61 @@ class SEOAnalyzer:
 
         return recommendations
 
-    async def analyze_page_with_benchmarks(
-        self,
-        url: str,
-        keyword: str,
-        country: Optional[str] = None,
-        max_competitors: int = 3
-    ) -> Dict[str, Any]:
-        """
-        Main orchestrator function that performs comprehensive SEO analysis.
-        
-        This method:
-        1. Analyzes target page
-        2. Fetches SERP results for keyword
-        3. Analyzes competitor pages
-        4. Generates benchmarks and recommendations
-        
-        Args:
-            url: The URL of the page to analyze
-            keyword: The main keyword to analyze for
-            country: Optional country code for localized SERP results
-            max_competitors: Maximum number of competitor pages to analyze
-            
-        Returns:
-            Dict[str, Any]: Dictionary containing:
-                - status: 'success' or 'error'
-                - target_analysis: Analysis of the target page
-                - competitor_analyses: List of competitor page analyses
-                - benchmarks: Calculated benchmark metrics
-                - recommendations: Generated SEO recommendations
-                
-        Raises:
-            SerpApiError: If SERP API requests fail
-            ValueError: If URL or keyword is invalid
-            Exception: For other unexpected errors
-        """
+    async def analyze_page_with_benchmarks(self, url: str, keyword: str, country: Optional[str] = None, max_competitors: int = 3) -> Dict[str, Any]:
+        """Analyze a page and benchmark against competitors."""
         try:
-            logger.info(f"Starting comprehensive analysis for {url}")
-            
-            # Analyze target page
-            target_result = await self.analyze_page(url, keyword)
-            if target_result['status'] == 'error':
-                logger.error(f"Failed to analyze target page {url}: {target_result['message']}")
-                return target_result
-
-            target_analysis = target_result['analysis']
-            logger.info(f"Successfully analyzed target page {url}")
-
             # Fetch SERP results
-            try:
-                serp_results = await self.fetch_serp_results(keyword, country)
-                logger.info(f"Fetched {len(serp_results)} SERP results")
-            except SerpApiError as e:
-                logger.error(f"Failed to fetch SERP results: {e}")
+            serp_results = await self.fetch_serp_results(keyword, country)
+            if not serp_results:
                 return {
                     'status': 'error',
-                    'message': f"Failed to fetch SERP results: {e}"
+                    'message': 'No SERP results found',
+                    'warning': 'Could not fetch competitor data'
                 }
 
-            # Filter out target URL and limit competitors
-            competitor_urls = [
-                result.url for result in serp_results
-                if result.url != url
-            ][:max_competitors]
-            
-            logger.info(f"Analyzing {len(competitor_urls)} competitor pages")
+            # Analyze target page
+            target_analysis = await self.analyze_page(url)
+            if not target_analysis:
+                return {
+                    'status': 'error',
+                    'message': 'Failed to analyze target page'
+                }
 
-            # Analyze competitor pages concurrently
+            # Analyze competitor pages (up to max_competitors)
             competitor_analyses = []
-            async with asyncio.TaskGroup() as tg:
-                tasks = [
-                    tg.create_task(self.analyze_page(comp_url, keyword))
-                    for comp_url in competitor_urls
-                ]
-
-            # Collect successful competitor analyses
-            for task, comp_url in zip(tasks, competitor_urls):
+            for result in serp_results[:max_competitors]:
                 try:
-                    result = task.result()
-                    if result['status'] == 'success':
-                        competitor_analyses.append(result['analysis'])
-                    else:
-                        logger.warning(f"Failed to analyze competitor {comp_url}: {result['message']}")
+                    analysis = await self.analyze_page(result.url)
+                    if analysis:
+                        competitor_analyses.append(analysis)
                 except Exception as e:
-                    logger.error(f"Error processing competitor {comp_url}: {e}")
+                    logger.warning(f"Failed to analyze competitor {result.url}: {e}")
+                    continue
 
-            # Generate benchmarks and recommendations
-            logger.info("Generating benchmarks and recommendations")
+            # Generate benchmarks
             benchmarks = self.benchmark_analysis(target_analysis, competitor_analyses)
+            
+            # Generate recommendations
             recommendations = self.generate_recommendations(target_analysis)
 
-            logger.info("Analysis completed successfully")
+            # Prepare final result
             final_result = {
-                "status": "success",
-                "target_analysis": target_analysis,
-                "competitor_analyses": competitor_analyses,
-                "benchmarks": benchmarks,
-                "recommendations": recommendations
+                'status': 'success',
+                'target_analysis': target_analysis,
+                'competitor_analyses': competitor_analyses,
+                'benchmarks': benchmarks,
+                'recommendations': recommendations
             }
-            # +++ ADD LOGGING +++
-            logger.debug(f"Final analysis dict being nested: Keys = {list(final_result.keys())}")
-            if 'url' not in final_result:
-                logger.error("CRITICAL: 'url' key missing from analysis dict just before returning final result!")
-            # +++ END LOGGING +++
+
+            # Add warning if some competitors couldn't be analyzed
+            if len(competitor_analyses) < min(len(serp_results), max_competitors):
+                final_result['warning'] = f"Only analyzed {len(competitor_analyses)} out of {min(len(serp_results), max_competitors)} competitors"
+
             return final_result
 
         except Exception as e:
-            logger.error(f"Critical error in analyze_page_with_benchmarks: {e}", exc_info=True)
+            logger.error(f"Error in analyze_page_with_benchmarks: {e}", exc_info=True)
             return {
                 'status': 'error',
                 'message': str(e)
-            }
-
-async def test_scraper():
-    """Test the scraper functionality."""
-    # Initialize components
-    scraper = WebScraper()
-    analyzer = SEOAnalyzer()
-    
-    # Test URL
-    test_url = "https://example.com"
-    
-    try:
-        # Test page fetching
-        scraped_page = await scraper.fetch_page(test_url)
-        if scraped_page:
-            analysis = await analyzer.analyze_page_with_benchmarks(test_url, "python programming")
-            
-            print("\nAnalysis Results:")
-            print(json.dumps(analysis.dict(), indent=2))
-        else:
-            print("Failed to fetch page")
-            
-    except Exception as e:
-        print(f"Error during testing: {str(e)}")
-
-if __name__ == "__main__":
-    asyncio.run(test_scraper()) 
+            } 

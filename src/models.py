@@ -1,10 +1,116 @@
 """
-Data models for the On-Page SEO Analyzer & Advisor.
-Defines the structure of analysis results and API requests/responses.
+Pydantic models for the On-Page SEO Analyzer & Advisor.
+Defines the data structures for API requests, responses, and analysis results.
 """
-
-from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, HttpUrl, Field
+from typing import List, Optional, Dict, Any
+from datetime import datetime
+
+class AnalysisRequest(BaseModel):
+    """Request model for the /analyze endpoint."""
+    url: HttpUrl
+    keyword: str
+    country: Optional[str] = None
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "url": "https://example.com",
+                "keyword": "example keyword",
+                "country": "US"
+            }
+        }
+
+class PageAnalysis(BaseModel):
+    """Model for analyzing a single web page."""
+    url: str
+    title: str
+    meta_description: str
+    headings: List[str]
+    main_text: str
+    links: List[str]
+    images: List[str]
+    schema_markup: Optional[List[str]] = None
+    word_count: int
+    readability_score: float
+    keyword_density: float
+    mobile_friendly: bool
+    page_speed: Optional[float] = None
+    seo_score: float
+    recommendations: List[str]
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "url": "https://example.com",
+                "title": "Example Page Title",
+                "meta_description": "Example meta description",
+                "headings": ["H1", "H2", "H3"],
+                "main_text": "Example main text content",
+                "links": ["https://example.com/link1"],
+                "images": ["https://example.com/image1.jpg"],
+                "schema_markup": ["Article"],
+                "word_count": 500,
+                "readability_score": 80.0,
+                "keyword_density": 2.5,
+                "mobile_friendly": True,
+                "page_speed": 90.0,
+                "seo_score": 85.0,
+                "recommendations": ["Improve meta description"]
+            }
+        }
+
+class AnalysisResponse(BaseModel):
+    """Response model for the /analyze endpoint."""
+    input: AnalysisRequest
+    status: str
+    target_analysis: Optional[PageAnalysis] = None
+    competitor_analyses: Optional[List[PageAnalysis]] = None
+    benchmarks: Optional[Dict[str, Any]] = None
+    recommendations: Optional[List[Dict[str, Any]]] = None
+    error_message: Optional[str] = None
+    warning: Optional[str] = None
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "input": {
+                    "url": "https://example.com",
+                    "keyword": "example keyword",
+                    "country": "US"
+                },
+                "status": "success",
+                "target_analysis": {
+                    "url": "https://example.com",
+                    "title": "Example Page Title",
+                    "meta_description": "Example meta description",
+                    "headings": ["H1", "H2", "H3"],
+                    "main_text": "Example main text content",
+                    "links": ["https://example.com/link1"],
+                    "images": ["https://example.com/image1.jpg"],
+                    "schema_markup": ["Article"],
+                    "word_count": 500,
+                    "readability_score": 80.0,
+                    "keyword_density": 2.5,
+                    "mobile_friendly": True,
+                    "page_speed": 90.0,
+                    "seo_score": 85.0,
+                    "recommendations": ["Improve meta description"]
+                },
+                "competitor_analyses": [],
+                "benchmarks": {
+                    "avg_word_count": 450,
+                    "avg_seo_score": 82.0
+                },
+                "recommendations": [
+                    {
+                        "category": "Content",
+                        "suggestion": "Add more relevant content"
+                    }
+                ],
+                "warning": "Some competitors could not be analyzed"
+            }
+        }
 
 class SerpResult(BaseModel):
     """Represents a single organic result from SERP API."""

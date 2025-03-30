@@ -928,60 +928,125 @@ class SEOAnalyzer:
         country: Optional[str] = None,
         max_competitors: int = 3
     ) -> Dict[str, Any]:
-        """Analyze a page and benchmark against competitors."""
+        """
+        Orchestrates the full analysis. Returns a dictionary suitable for API response.
+        """
+        request_id = context_var_request_id.get('N/A')  # Get request ID
+        logger.info(f"[{request_id}] Starting comprehensive analysis for {url}")
+        cache_key_segment = f"{keyword}_{country or self.default_country}"
+
+        # Check cache first
+        cached_result = self.cache.get(url, cache_key_segment)
+        if cached_result:
+            return cached_result
+
+        # Initialize final result structure
+        final_result: Dict[str, Any] = {
+            "analysis": None,
+            "competitor_analysis_summary": [],
+            "status": "error",
+            "error_message": None,
+            "warning": None
+        }
+
+        target_analysis_obj: Optional[PageAnalysis] = None
+
         try:
-            # Fetch SERP results
-            serp_results = await self.fetch_serp_results(keyword, country)
-            if not serp_results:
-                return {
-                    'status': 'error',
-                    'message': 'No SERP results found',
-                    'warning': 'Could not fetch competitor data'
-                }
-
-            # Analyze target page
-            target_analysis = await self.analyze_page(url, keyword)
-            if not target_analysis:
-                return {
-                    'status': 'error',
-                    'message': 'Failed to analyze target page'
-                }
-
-            # Analyze competitor pages (up to max_competitors)
-            competitor_analyses = []
-            for result in serp_results[:max_competitors]:
-                try:
-                    analysis = await self.analyze_page(result.url, keyword)
-                    if analysis:
-                        competitor_analyses.append(analysis)
-                except Exception as e:
-                    logger.warning(f"Failed to analyze competitor {result.url}: {e}")
-                    continue
-
-            # Generate benchmarks
-            benchmarks = self.benchmark_analysis(target_analysis, competitor_analyses)
+            # 1. Analyze Target Page
+            logger.info(f"[{request_id}] --- Analyzing Target URL: {url} ---")
+            target_analysis_result = await self.analyze_page(url, keyword)
             
-            # Generate recommendations
-            recommendations = self.generate_recommendations(target_analysis, benchmarks)
+            if not target_analysis_result or target_analysis_result.get('status') == 'error':
+                error_msg = target_analysis_result.get('message', f"Failed to analyze target URL: {url}") if target_analysis_result else f"Failed to analyze target URL: {url}"
+                logger.error(f"[{request_id}] {error_msg}")
+                final_result["error_message"] = error_msg
+                return final_result
 
-            # Prepare final result
-            final_result = {
-                'status': 'success',
-                'target_analysis': target_analysis.model_dump(mode='json'),
-                'competitor_analyses': [comp.model_dump(mode='json') for comp in competitor_analyses],
-                'benchmarks': benchmarks,
-                'recommendations': recommendations
-            }
+            target_analysis_obj = target_analysis_result.get('analysis')
+            if not isinstance(target_analysis_obj, PageAnalysis):
+                error_msg = f"Invalid analysis object returned for target URL: {url}"
+                logger.error(f"[{request_id}] {error_msg}")
+                final_result["error_message"] = error_msg
+                return final_result
 
-            # Add warning if some competitors couldn't be analyzed
-            if len(competitor_analyses) < min(len(serp_results), max_competitors):
-                final_result['warning'] = f"Only analyzed {len(competitor_analyses)} out of {min(len(serp_results), max_competitors)} competitors"
+            logger.info(f"[{request_id}] Successfully analyzed target page {url}")
 
+            # 2. Fetch SERP Results
+            logger.info(f"[{request_id}] --- Fetching Competitors from SERP for Keyword: {keyword} in {country or self.default_country} ---")
+            competitor_urls_from_serp: List[str] = []
+            serp_error = None
+            try:
+                serp_results = await self.fetch_serp_results(keyword, country)
+                target_netloc = urlparse(url).netloc.replace('www.', '')
+                competitor_urls_from_serp = [
+                    res.url for res in serp_results
+                    if res.url and urlparse(res.url).netloc.replace('www.', '') != target_netloc
+                ][:max_competitors]
+                logger.info(f"[{request_id}] Found {len(competitor_urls_from_serp)} competitor URLs from SERP.")
+            except SerpApiError as e:
+                serp_error = f"Could not fetch SERP results: {e}"
+                logger.error(f"[{request_id}] {serp_error}")
+                final_result["warning"] = serp_error
+
+            # 3. Analyze Competitors Concurrently
+            competitor_analyses_objs: List[PageAnalysis] = []
+            if competitor_urls_from_serp:
+                logger.info(f"[{request_id}] --- Analyzing {len(competitor_urls_from_serp)} Competitor URLs Concurrently ---")
+                tasks = []
+                async with asyncio.TaskGroup() as tg:
+                    for comp_url in competitor_urls_from_serp:
+                        tasks.append(tg.create_task(self.analyze_page(comp_url, keyword)))
+
+                # Collect results
+                for i, task in enumerate(tasks):
+                    comp_url = competitor_urls_from_serp[i]
+                    try:
+                        result = task.result()
+                        if isinstance(result, dict) and result.get('status') == 'success':
+                            comp_analysis = result.get('analysis')
+                            if isinstance(comp_analysis, PageAnalysis):
+                                competitor_analyses_objs.append(comp_analysis)
+                            else:
+                                logger.warning(f"[{request_id}] Invalid analysis object for competitor {comp_url}")
+                        else:
+                            logger.warning(f"[{request_id}] Failed to analyze competitor {comp_url}: {result.get('message') if isinstance(result, dict) else str(result)}")
+                    except Exception as e:
+                        logger.warning(f"[{request_id}] Exception analyzing competitor {comp_url}: {e}")
+
+            # 4. Benchmark Analysis
+            logger.info(f"[{request_id}] --- Performing Benchmark Analysis ---")
+            benchmarks_dict = self.benchmark_analysis(target_analysis_obj, competitor_analyses_objs)
+
+            # 5. Generate Recommendations
+            logger.info(f"[{request_id}] --- Generating Recommendations ---")
+            recommendations_list = self.generate_recommendations(target_analysis_obj, benchmarks_dict)
+
+            # 6. Prepare final successful response structure
+            competitor_summary = [{
+                "url": comp_obj.url,
+                "title_length": comp_obj.title.length if comp_obj.title else 0,
+                "word_count": comp_obj.content.word_count if comp_obj.content else 0,
+            } for comp_obj in competitor_analyses_objs
+            ]
+
+            # Create the final analysis dictionary
+            final_target_analysis_dict = target_analysis_obj.model_dump(mode='json')
+            final_target_analysis_dict["benchmarks"] = benchmarks_dict
+            final_target_analysis_dict["recommendations"] = recommendations_list
+
+            # Populate the overall result
+            final_result["analysis"] = final_target_analysis_dict
+            final_result["competitor_analysis_summary"] = competitor_summary
+            final_result["status"] = "success"
+
+            logger.info(f"[{request_id}] Analysis completed successfully for {url}")
+            self.cache.set(url, cache_key_segment, final_result)
             return final_result
 
         except Exception as e:
-            logger.error(f"Error in analyze_page_with_benchmarks: {e}", exc_info=True)
-            return {
-                'status': 'error',
-                'message': str(e)
-            } 
+            logger.error(f"[{request_id}] Critical error in analyze_page_with_benchmarks for {url}: {e}", exc_info=True)
+            final_result["status"] = "error"
+            final_result["error_message"] = f"Unexpected internal error: {e}"
+            final_result["analysis"] = None
+            final_result["competitor_analysis_summary"] = []
+            return final_result 

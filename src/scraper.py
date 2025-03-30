@@ -17,6 +17,8 @@ import re
 import textstat
 from parsel import Selector
 import statistics
+import aiohttp
+import pydantic
 
 # Import models from the models file
 from src.models import (
@@ -163,110 +165,72 @@ class SEOAnalyzer:
         self.default_country = os.getenv('DEFAULT_COUNTRY', 'us')
         logger.info("SEOAnalyzer initialized successfully")
 
-    async def fetch_serp_results(self, keyword: str, country: Optional[str] = None) -> List[SerpResult]:
-        """Fetch SERP results using the configured API key with rate limiting."""
-        await self.rate_limiter.acquire()
-
-        if not keyword:
-            raise ValueError("Keyword cannot be empty")
-
-        country = country or self.default_country
-        logger.info(f"Fetching SERP for keyword='{keyword}', country='{country}'")
-
-        # Adjust params based on ValueSERP
-        params = {
-            'api_key': self.api_key,
-            'q': keyword,
-            'location': country,
-            'output': 'json',
-            'num': '10',
-        }
-
-        response_for_logging = None # To hold response object for logging on error
-
+    async def fetch_serp_results(self, keyword: str, country: str = 'us') -> List[SerpResult]:
+        """
+        Fetch SERP results for a keyword using ValueSERP API.
+        
+        Args:
+            keyword: The search keyword
+            country: Two-letter country code (default: 'us')
+            
+        Returns:
+            List of SerpResult objects
+        """
         try:
-            async with httpx.AsyncClient(timeout=45.0) as client:
-                response = await client.get(self.serp_api_url, params=params, headers=self.headers)
-                response_for_logging = response # Store response for potential error logging
-                response.raise_for_status() # Synchronous is correct here
-
-                # --- Attempt to decode JSON using response.json() ---
-                try:
-                    # response.json() is SYNCHRONOUS - REMOVE AWAIT
-                    data = response.json()
-                except json.JSONDecodeError as json_err:
-                     # If response.json() fails, try to log the raw text if possible
-                     raw_text = "[Could not read response text]"
-                     try:
-                         # Attempt to read text synchronously AFTER error for logging
-                         raw_text = response.text
-                     except Exception:
-                          pass # Ignore if reading text also fails
-                     logger.error(f"Failed to decode SERP API JSON response: {json_err}. Response Text approx: {raw_text[:1000]}...")
-                     raise SerpApiError("Invalid JSON response from SERP API")
-                except Exception as e:
-                     # Catch other potential errors during .json() call
-                     logger.error(f"Error calling response.json(): {e}", exc_info=True)
-                     raise SerpApiError(f"Error processing SERP API response: {e}")
-
-                # --- Proceed with validated JSON data ---
-                if not isinstance(data, dict):
-                     raise SerpApiError(f"Invalid API response format: Expected dict, got {type(data)}")
-
-                if data.get("request_info", {}).get("success") is False:
-                    error_message = data.get("request_info", {}).get("message", "Unknown API Error")
-                    raise SerpApiError(f"SERP API Error: {error_message}")
-
-                organic_results = data.get('organic_results', [])
-                if not organic_results:
-                    logger.warning(f"No organic results found for '{keyword}' in '{country}'.")
-                    return []
-
-                results = []
-                for result in organic_results:
-                    url_key = 'link' if 'link' in result else 'url'
-                    if result.get(url_key) and result.get('title'):
-                        results.append(SerpResult(
-                            url=result[url_key],
-                            title=result['title'],
-                            snippet=result.get('snippet')
-                        ))
-                    else:
-                         logger.warning(f"Skipping SERP result with missing URL or title: {result}")
-
-                logger.info(f"Successfully fetched {len(results)} SERP results.")
-                return results[:10]
-
-        except httpx.TimeoutException:
-            logger.error("Request timed out while fetching SERP results")
-            raise SerpApiError("Request timed out while fetching SERP results")
-        except httpx.RequestError as e:
-            logger.error(f"Network error while fetching SERP results: {e}")
-            raise SerpApiError(f"Network error while fetching SERP results: {e}")
-        except httpx.HTTPStatusError as e:
-            # Log response text if available on HTTP error
-            error_text = "[Could not read response text]"
-            if response_for_logging:
-                 try:
-                     error_text = response_for_logging.text
-                 except Exception:
-                     pass
-            logger.error(f"HTTP error {e.response.status_code} fetching SERP: {e}. Response text: {error_text[:500]}")
-            if e.response.status_code == 401: raise SerpApiError("Invalid SERP API key")
-            if e.response.status_code == 429: raise SerpApiError("SERP API rate limit exceeded")
-            raise SerpApiError(f"HTTP error {e.response.status_code} fetching SERP results")
-        except SerpApiError as e:
-             logger.error(f"Caught specific SerpApiError: {e}")
-             raise e # Re-raise to be handled by main.py
+            # Prepare API request
+            params = {
+                'api_key': self.api_key,
+                'q': keyword,
+                'gl': country,
+                'num': 100  # Get maximum results
+            }
+            
+            # Make API request
+            async with aiohttp.ClientSession() as session:
+                async with session.get(self.serp_api_url, params=params) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        logger.error(f"ValueSERP API error: {response.status} - {error_text}")
+                        return []
+                    
+                    data = await response.json()
+                    
+                    # Extract organic results
+                    organic_results = data.get('organic_results', [])
+                    if not organic_results:
+                        logger.warning(f"No organic results found for keyword: {keyword}")
+                        return []
+                    
+                    # Process each result
+                    results = []
+                    for result in organic_results:
+                        # Explicitly check for required fields from ValueSERP
+                        api_url = result.get('link')
+                        api_title = result.get('title')
+                        
+                        if api_url and api_title:
+                            try:
+                                # Create model instance with fields defined in SerpResult model
+                                serp_result = SerpResult(
+                                    url=api_url,  # Map 'link' to 'url'
+                                    title=api_title,
+                                    snippet=result.get('snippet'),  # Optional snippet
+                                    position=result.get('position'),  # Optional position
+                                    domain=result.get('domain')  # Optional domain
+                                )
+                                results.append(serp_result)
+                            except pydantic.ValidationError as model_err:
+                                # Log specific model validation error for THIS result
+                                logger.warning(f"Skipping SERP result due to model validation error: {model_err}. Data was: {result}")
+                                continue  # Skip this result and proceed with others
+                        else:
+                            logger.warning(f"Skipping SERP result with missing link or title: {result}")
+                    
+                    return results
+                    
         except Exception as e:
-            error_text = "[Could not read response text]"
-            if response_for_logging:
-                 try:
-                     error_text = response_for_logging.text
-                 except Exception:
-                     pass
-            logger.error(f"Unexpected error processing SERP results: {e}. Response text was: {error_text[:500]}", exc_info=True)
-            raise SerpApiError(f"Unexpected error processing SERP results: {e}")
+            logger.error(f"Error fetching SERP results: {e}", exc_info=True)
+            return []
 
     async def fetch_page_content(self, url: str) -> Optional[str]:
         """Fetch HTML content from a URL with caching."""
@@ -645,34 +609,39 @@ class SEOAnalyzer:
         Analyze the viewport meta tag content.
         
         Args:
-            selector: Parsel Selector object containing the page HTML
+            selector: Parsel selector for the page
             
         Returns:
-            The viewport content string if found, None otherwise
+            Content of viewport meta tag if present, None otherwise
         """
-        viewport_content = selector.css('meta[name="viewport"]::attr(content)').get()
-        return viewport_content.strip() if viewport_content else None
+        try:
+            viewport = selector.css('meta[name="viewport"]::attr(content)').get()
+            return viewport if viewport else None
+        except Exception as e:
+            logger.warning(f"Error analyzing viewport tag: {e}")
+            return None
 
     def _analyze_canonical(self, selector: Selector, base_url: str) -> Optional[str]:
         """
-        Analyze the canonical link tag and return its absolute URL.
+        Analyze the canonical link tag.
         
         Args:
-            selector: Parsel Selector object containing the page HTML
-            base_url: The base URL of the page for resolving relative URLs
+            selector: Parsel selector for the page
+            base_url: Base URL of the page for resolving relative URLs
             
         Returns:
-            The absolute canonical URL if found, None otherwise
+            Canonical URL if specified, None otherwise
         """
         try:
-            canonical_href = selector.css('link[rel="canonical"]::attr(href)').get()
-            if not canonical_href:
-                return None
-                
-            # Resolve relative URL to absolute
-            return urljoin(base_url, canonical_href.strip())
+            canonical = selector.css('link[rel="canonical"]::attr(href)').get()
+            if canonical:
+                # Resolve relative URLs
+                if canonical.startswith('/'):
+                    canonical = urljoin(base_url, canonical)
+                return canonical
+            return None
         except Exception as e:
-            logger.warning(f"Error processing canonical URL: {e}")
+            logger.warning(f"Error analyzing canonical tag: {e}")
             return None
 
     async def analyze_page(self, url: str, keyword: str) -> Dict[str, Any]:
@@ -949,25 +918,29 @@ class SEOAnalyzer:
                 
                 if title_len < 30:
                     recommendations.append({
-                        'text': f"Title is too short ({title_len} chars). Aim for 30-60 characters to ensure proper display in search results.",
-                        'severity': 'high'
+                        'type': 'Title',
+                        'severity': 'high',
+                        'text': f"Title is too short ({title_len} chars). Current title: '{target_analysis.title.text}'. Aim for 30-60 characters to ensure proper display in search results. Learn more: https://developers.google.com/search/docs/appearance/title"
                     })
                 elif title_len > 60:
                     recommendations.append({
-                        'text': f"Title is too long ({title_len} chars). Keep it under 60 characters to avoid truncation in search results.",
-                        'severity': 'high'
+                        'type': 'Title',
+                        'severity': 'high',
+                        'text': f"Title is too long ({title_len} chars). Current title: '{target_analysis.title.text}'. Keep it under 60 characters to avoid truncation in search results. Learn more: https://developers.google.com/search/docs/appearance/title"
                     })
                 
                 if not target_analysis.title.keyword_present:
                     recommendations.append({
-                        'text': f"Primary keyword not found in title ('{target_analysis.title.text[:50]}...'). Include it naturally for better SEO.",
-                        'severity': 'high'
+                        'type': 'Title',
+                        'severity': 'high',
+                        'text': f"Primary keyword not found in title. Current title: '{target_analysis.title.text}'. Include it naturally for better SEO. Learn more: https://developers.google.com/search/docs/appearance/title"
                     })
                 
                 if title_len < bm_title_len_avg:
                     recommendations.append({
-                        'text': f"Title length ({title_len}) is shorter than competitor average ({bm_title_len_avg:.0f}). Consider adding more relevant terms.",
-                        'severity': 'medium'
+                        'type': 'Title',
+                        'severity': 'medium',
+                        'text': f"Title length ({title_len} chars) is shorter than competitor average ({bm_title_len_avg:.0f}). Consider adding more relevant terms while staying within 60 characters. Learn more: https://developers.google.com/search/docs/appearance/title"
                     })
         except Exception as e:
             logger.error(f"Error generating title recommendations: {e}")
@@ -980,25 +953,29 @@ class SEOAnalyzer:
                 
                 if meta_len < 120:
                     recommendations.append({
-                        'text': f"Meta description is too short ({meta_len} chars). Aim for 120-160 characters to provide comprehensive information.",
-                        'severity': 'high'
+                        'type': 'Meta Description',
+                        'severity': 'high',
+                        'text': f"Meta description is too short ({meta_len} chars). Current description: '{target_analysis.meta_description.text}'. Aim for 120-160 characters to provide comprehensive information. Learn more: https://developers.google.com/search/docs/appearance/snippet"
                     })
                 elif meta_len > 160:
                     recommendations.append({
-                        'text': f"Meta description is too long ({meta_len} chars). Keep it under 160 characters to avoid truncation in search results.",
-                        'severity': 'high'
+                        'type': 'Meta Description',
+                        'severity': 'high',
+                        'text': f"Meta description is too long ({meta_len} chars). Current description: '{target_analysis.meta_description.text}'. Keep it under 160 characters to avoid truncation in search results. Learn more: https://developers.google.com/search/docs/appearance/snippet"
                     })
                 
                 if not target_analysis.meta_description.keyword_present:
                     recommendations.append({
-                        'text': f"Primary keyword not found in meta description ('{target_analysis.meta_description.text[:50]}...'). Include it naturally for better visibility.",
-                        'severity': 'high'
+                        'type': 'Meta Description',
+                        'severity': 'high',
+                        'text': f"Primary keyword not found in meta description. Current description: '{target_analysis.meta_description.text}'. Include it naturally for better visibility. Learn more: https://developers.google.com/search/docs/appearance/snippet"
                     })
                 
                 if meta_len < bm_meta_len_avg:
                     recommendations.append({
-                        'text': f"Meta description length ({meta_len}) is shorter than competitor average ({bm_meta_len_avg:.0f}). Consider adding more relevant content.",
-                        'severity': 'medium'
+                        'type': 'Meta Description',
+                        'severity': 'medium',
+                        'text': f"Meta description length ({meta_len} chars) is shorter than competitor average ({bm_meta_len_avg:.0f}). Consider adding more relevant content while staying within 160 characters. Learn more: https://developers.google.com/search/docs/appearance/snippet"
                     })
         except Exception as e:
             logger.error(f"Error generating meta description recommendations: {e}")
@@ -1008,25 +985,29 @@ class SEOAnalyzer:
             if target_analysis.headings:
                 if not target_analysis.headings.h1:
                     recommendations.append({
-                        'text': "No H1 heading found. Add a clear, descriptive H1 heading that includes your primary keyword.",
-                        'severity': 'high'
+                        'type': 'Headings',
+                        'severity': 'high',
+                        'text': "No H1 heading found. Add a clear, descriptive H1 heading that includes your primary keyword. This is crucial for both SEO and accessibility. Learn more: https://developers.google.com/search/docs/crawling-indexing/rendering"
                     })
                 elif not target_analysis.headings.h1_contains_keyword:
                     h1_text = target_analysis.headings.h1[0].text if target_analysis.headings.h1 else ""
                     recommendations.append({
-                        'text': f"Primary keyword not found in the main H1 heading ('{h1_text[:50]}...'). Include it naturally for better SEO.",
-                        'severity': 'high'
+                        'type': 'Headings',
+                        'severity': 'high',
+                        'text': f"Primary keyword not found in the main H1 heading. Current H1: '{h1_text}'. Include it naturally for better SEO. Learn more: https://developers.google.com/search/docs/crawling-indexing/rendering"
                     })
                 
                 if not target_analysis.headings.h2:
                     recommendations.append({
-                        'text': "No H2 headings found. Add subheadings to structure your content and improve readability.",
-                        'severity': 'medium'
+                        'type': 'Headings',
+                        'severity': 'medium',
+                        'text': "No H2 headings found. Add subheadings to structure your content and improve readability. This helps both users and search engines understand your content hierarchy. Learn more: https://developers.google.com/search/docs/crawling-indexing/rendering"
                     })
                 elif target_analysis.headings.h2_contains_keyword_count == 0:
                     recommendations.append({
-                        'text': f"None of your {target_analysis.headings.h2_count} H2 headings contain the primary keyword. Consider adding it naturally to relevant subheadings.",
-                        'severity': 'medium'
+                        'type': 'Headings',
+                        'severity': 'medium',
+                        'text': f"None of your {target_analysis.headings.h2_count} H2 headings contain the primary keyword. Consider adding it naturally to relevant subheadings to improve topical relevance. Learn more: https://developers.google.com/search/docs/crawling-indexing/rendering"
                     })
         except Exception as e:
             logger.error(f"Error generating headings recommendations: {e}")
@@ -1036,27 +1017,31 @@ class SEOAnalyzer:
             if target_analysis.content:
                 if target_analysis.content.word_count < 300:
                     recommendations.append({
-                        'text': f"Content is too short ({target_analysis.content.word_count} words). Aim for at least 300 words to provide comprehensive information.",
-                        'severity': 'high'
+                        'type': 'Content',
+                        'severity': 'high',
+                        'text': f"Content is too short ({target_analysis.content.word_count} words). Aim for at least 300 words to provide comprehensive information and establish topical authority. Learn more: https://developers.google.com/search/docs/crawling-indexing/rendering"
                     })
                 
                 if target_analysis.content.keyword_density < 0.5:
                     recommendations.append({
-                        'text': f"Keyword density is low ({target_analysis.content.keyword_density:.1f}%). Consider naturally incorporating the primary keyword more frequently.",
-                        'severity': 'medium'
+                        'type': 'Content',
+                        'severity': 'medium',
+                        'text': f"Keyword density is low ({target_analysis.content.keyword_density:.1f}%). Consider naturally incorporating the primary keyword more frequently in your content. Learn more: https://developers.google.com/search/docs/crawling-indexing/rendering"
                     })
                 elif target_analysis.content.keyword_density > 3:
                     recommendations.append({
-                        'text': f"Keyword density is high ({target_analysis.content.keyword_density:.1f}%). Reduce keyword usage to avoid over-optimization.",
-                        'severity': 'medium'
+                        'type': 'Content',
+                        'severity': 'medium',
+                        'text': f"Keyword density is high ({target_analysis.content.keyword_density:.1f}%). Reduce keyword usage to avoid over-optimization and maintain natural readability. Learn more: https://developers.google.com/search/docs/crawling-indexing/rendering"
                     })
                 
                 # Check readability scores
                 readability = target_analysis.content.readability
                 if readability.get('flesch_reading_ease', 0) < 60:
                     recommendations.append({
-                        'text': f"Content readability score is low ({readability['flesch_reading_ease']:.0f}). Consider simplifying language and improving structure.",
-                        'severity': 'medium'
+                        'type': 'Content',
+                        'severity': 'medium',
+                        'text': f"Content readability score is low ({readability['flesch_reading_ease']:.0f}). Consider simplifying language, using shorter sentences, and improving content structure for better user engagement. Learn more: https://developers.google.com/search/docs/crawling-indexing/rendering"
                     })
         except Exception as e:
             logger.error(f"Error generating content recommendations: {e}")
@@ -1070,14 +1055,16 @@ class SEOAnalyzer:
                     perc_missing = (alts_missing / img_count) * 100
                     if alts_missing > 0:
                         recommendations.append({
-                            'text': f"{alts_missing} ({perc_missing:.0f}%) of {img_count} images are missing descriptive alt text. Add relevant alt text for accessibility and SEO.",
-                            'severity': 'high'
+                            'type': 'Images',
+                            'severity': 'high',
+                            'text': f"{alts_missing} ({perc_missing:.0f}%) of {img_count} images are missing descriptive alt text. Add relevant alt text for accessibility and SEO. Learn more: https://developers.google.com/search/docs/crawling-indexing/rendering"
                         })
                     
                     if target_analysis.images.alts_with_keyword == 0:
                         recommendations.append({
-                            'text': f"None of your {img_count} images have alt text containing the primary keyword. Consider adding it naturally to relevant image descriptions.",
-                            'severity': 'medium'
+                            'type': 'Images',
+                            'severity': 'medium',
+                            'text': f"None of your {img_count} images have alt text containing the primary keyword. Consider adding it naturally to relevant image descriptions to improve topical relevance. Learn more: https://developers.google.com/search/docs/crawling-indexing/rendering"
                         })
         except Exception as e:
             logger.error(f"Error generating images recommendations: {e}")
@@ -1087,13 +1074,15 @@ class SEOAnalyzer:
             if target_analysis.schema:
                 if not target_analysis.schema.types_found:
                     recommendations.append({
-                        'text': "No Schema.org markup (JSON-LD) detected. Implementing relevant schema like 'Article' or 'FAQPage' can enhance search appearance.",
-                        'severity': 'medium'
+                        'type': 'Schema',
+                        'severity': 'medium',
+                        'text': "No Schema.org markup (JSON-LD) detected. Implementing relevant schema like 'Article' or 'FAQPage' can enhance search appearance and provide rich results. Learn more: https://developers.google.com/search/docs/appearance/structured-data"
                     })
                 elif 'Article' not in target_analysis.schema.types_found:
                     recommendations.append({
-                        'text': f"Consider adding Article schema. Current schema types: {', '.join(target_analysis.schema.types_found)}.",
-                        'severity': 'low'
+                        'type': 'Schema',
+                        'severity': 'low',
+                        'text': f"Consider adding Article schema. Current schema types: {', '.join(target_analysis.schema.types_found)}. Article schema can improve search appearance and provide rich results. Learn more: https://developers.google.com/search/docs/appearance/structured-data"
                     })
         except Exception as e:
             logger.error(f"Error generating schema recommendations: {e}")
@@ -1106,14 +1095,16 @@ class SEOAnalyzer:
                 
                 if html_size and html_size > 500 * 1024:  # > 500KB
                     recommendations.append({
-                        'text': f'HTML size ({html_size / 1024:.0f} KB) seems large. Review for unnecessary code or large inline elements.',
-                        'severity': 'low'
+                        'type': 'Performance',
+                        'severity': 'low',
+                        'text': f'HTML size ({html_size / 1024:.0f} KB) seems large. Review for unnecessary code, large inline elements, or unoptimized assets. Learn more: https://developers.google.com/search/docs/crawling-indexing/rendering'
                     })
                 
                 if text_ratio and text_ratio < 10:  # < 10% text
                     recommendations.append({
-                        'text': f'Text-to-HTML ratio ({text_ratio:.1f}%) is low. Ensure sufficient textual content relative to code.',
-                        'severity': 'low'
+                        'type': 'Performance',
+                        'severity': 'low',
+                        'text': f'Text-to-HTML ratio ({text_ratio:.1f}%) is low. Ensure sufficient textual content relative to code for better SEO and user experience. Learn more: https://developers.google.com/search/docs/crawling-indexing/rendering'
                     })
         except Exception as e:
             logger.error(f"Error generating performance recommendations: {e}")

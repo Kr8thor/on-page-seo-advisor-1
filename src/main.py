@@ -26,7 +26,6 @@ logging.basicConfig(
     level=logging.DEBUG,  # Set to DEBUG to see all logs
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('logs/app.log'),
         logging.StreamHandler()
     ]
 )

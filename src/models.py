@@ -174,15 +174,28 @@ class PageAnalysis(BaseModel):
 # --- API Request/Response Models ---
 
 class SerpResult(BaseModel):
-    """Model for SERP result data."""
-    url: str
-    title: str
-    snippet: str
-    position: int
-    domain: str
-    path: str
-    full_url: str
-    is_competitor: bool = False
+    """
+    Represents a single organic result from SERP API.
+    
+    Maps to the structure provided by ValueSERP API's organic_results array.
+    Only includes fields that are actually provided by the API and needed for analysis.
+    """
+    url: str = Field(..., description="The full URL of the search result (maps to 'link' in API response)")
+    title: str = Field(..., description="The title of the search result")
+    snippet: Optional[str] = Field(None, description="The description/snippet of the search result")
+    position: Optional[int] = Field(None, description="The position of the result in SERP (1-based)")
+    domain: Optional[str] = Field(None, description="The domain of the result URL")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "url": "https://example.com/article",
+                "title": "Example Article Title",
+                "snippet": "This is an example snippet from the search result...",
+                "position": 1,
+                "domain": "example.com"
+            }
+        }
 
 class AnalysisRequest(BaseModel):
     """Request model for page analysis."""

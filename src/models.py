@@ -22,41 +22,38 @@ class AnalysisRequest(BaseModel):
         }
 
 class PageAnalysis(BaseModel):
-    """Model for analyzing a single web page."""
+    """Detailed analysis results for a single page."""
     url: str
-    title: str
-    meta_description: str
-    headings: List[str]
-    main_text: str
-    links: List[str]
-    images: List[str]
-    schema_markup: Optional[List[str]] = None
-    word_count: int
-    readability_score: float
-    keyword_density: float
-    mobile_friendly: bool
-    page_speed: Optional[float] = None
-    seo_score: float
-    recommendations: List[str]
+    title: Optional[TitleAnalysis] = None
+    meta_description: Optional[MetaDescriptionAnalysis] = None
+    headings: Optional[HeadingsAnalysis] = None
+    content: Optional[ContentAnalysis] = None
+    links: Optional[LinksAnalysis] = None
+    images: Optional[ImagesAnalysis] = None
+    schema: Optional[SchemaAnalysis] = None
+    performance: Optional[Dict[str, Any]] = None  # Added from existing implementation
+    benchmarks: Optional[Dict[str, Any]] = None
+    recommendations: Optional[List[Dict[str, Any]]] = None
+    viewport_content: Optional[str] = None  # Content of the viewport meta tag
+    canonical_url: Optional[str] = None  # Absolute URL of the canonical link tag
 
     class Config:
         json_schema_extra = {
             "example": {
                 "url": "https://example.com",
-                "title": "Example Page Title",
-                "meta_description": "Example meta description",
-                "headings": ["H1", "H2", "H3"],
-                "main_text": "Example main text content",
-                "links": ["https://example.com/link1"],
-                "images": ["https://example.com/image1.jpg"],
-                "schema_markup": ["Article"],
-                "word_count": 500,
-                "readability_score": 80.0,
-                "keyword_density": 2.5,
-                "mobile_friendly": True,
-                "page_speed": 90.0,
-                "seo_score": 85.0,
-                "recommendations": ["Improve meta description"]
+                "title": {
+                    "text": "Example Page Title",
+                    "length": 20,
+                    "keyword_present": True,
+                    "position": "start"
+                },
+                "meta_description": {
+                    "text": "Example meta description",
+                    "length": 30,
+                    "keyword_present": True
+                },
+                "viewport_content": "width=device-width, initial-scale=1.0",
+                "canonical_url": "https://example.com/canonical-page"
             }
         }
 
@@ -82,20 +79,19 @@ class AnalysisResponse(BaseModel):
                 "status": "success",
                 "target_analysis": {
                     "url": "https://example.com",
-                    "title": "Example Page Title",
-                    "meta_description": "Example meta description",
-                    "headings": ["H1", "H2", "H3"],
-                    "main_text": "Example main text content",
-                    "links": ["https://example.com/link1"],
-                    "images": ["https://example.com/image1.jpg"],
-                    "schema_markup": ["Article"],
-                    "word_count": 500,
-                    "readability_score": 80.0,
-                    "keyword_density": 2.5,
-                    "mobile_friendly": True,
-                    "page_speed": 90.0,
-                    "seo_score": 85.0,
-                    "recommendations": ["Improve meta description"]
+                    "title": {
+                        "text": "Example Page Title",
+                        "length": 20,
+                        "keyword_present": True,
+                        "position": "start"
+                    },
+                    "meta_description": {
+                        "text": "Example meta description",
+                        "length": 30,
+                        "keyword_present": True
+                    },
+                    "viewport_content": "width=device-width, initial-scale=1.0",
+                    "canonical_url": "https://example.com/canonical-page"
                 },
                 "competitor_analyses": [],
                 "benchmarks": {
@@ -142,9 +138,16 @@ class HeadingsAnalysis(BaseModel):
     h1: List[HeadingDetail] = []
     h2: List[HeadingDetail] = []
     h3: List[HeadingDetail] = []
+    h4: List[HeadingDetail] = []
+    h5: List[HeadingDetail] = []
+    h6: List[HeadingDetail] = []
     h1_count: int = 0
     h1_contains_keyword: bool = False
+    h2_count: int = 0
+    h2_contains_keyword_count: int = 0
     h2_keywords: List[str] = []  # Preserved from existing implementation
+    total_headings: int = 0  # Total count of all headings
+    keyword_present_in_any: bool = False  # Whether keyword appears in any heading
 
 class ContentAnalysis(BaseModel):
     """Analysis results for page content."""
@@ -170,20 +173,6 @@ class SchemaAnalysis(BaseModel):
     """Analysis results for schema.org markup."""
     types_found: List[str] = []  # List of @type values found
     schema_data: List[Dict[str, Any]] = []  # Preserved from existing implementation
-
-class PageAnalysis(BaseModel):
-    """Detailed analysis results for a single page."""
-    url: str
-    title: Optional[TitleAnalysis] = None
-    meta_description: Optional[MetaDescriptionAnalysis] = None
-    headings: Optional[HeadingsAnalysis] = None
-    content: Optional[ContentAnalysis] = None
-    links: Optional[LinksAnalysis] = None
-    images: Optional[ImagesAnalysis] = None
-    schema: Optional[SchemaAnalysis] = None
-    performance: Optional[Dict[str, Any]] = None  # Added from existing implementation
-    benchmarks: Optional[Dict[str, Any]] = None
-    recommendations: Optional[List[Dict[str, Any]]] = None
 
 class AnalysisRequest(BaseModel):
     """Request model for page analysis."""

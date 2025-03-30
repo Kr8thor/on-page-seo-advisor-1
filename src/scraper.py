@@ -354,38 +354,118 @@ class SEOAnalyzer:
         )
 
     def _analyze_headings(self, selector: Selector, keyword: str) -> HeadingsAnalysis:
-        """Analyze page headings H1-H3."""
-        keyword_lower = keyword.lower()
-
-        def process_headings(elements: List[Any]) -> List[HeadingDetail]:
-            details = []
-            for el in elements:
-                text = el.css('::text').get('').strip()
-                if text: # Only include headings with text content
-                    details.append(HeadingDetail(
-                        text=text,
-                        contains_keyword=(keyword_lower in text.lower())
-                    ))
-            return details
-
-        h1_elements = selector.css('h1')
-        h2_elements = selector.css('h2')
-        h3_elements = selector.css('h3')
-
-        h1_details = process_headings(h1_elements)
-        h2_details = process_headings(h2_elements)
-        h3_details = process_headings(h3_elements)
-
-        h1_count = len(h1_details)
-        h1_contains_keyword = any(hd.contains_keyword for hd in h1_details)
-
-        return HeadingsAnalysis(
-            h1=h1_details,
-            h2=h2_details,
-            h3=h3_details,
-            h1_count=h1_count,
-            h1_contains_keyword=h1_contains_keyword,
+        """
+        Analyze headings in the page content.
+        
+        Args:
+            selector: Parsel Selector object containing the page HTML
+            keyword: Target keyword to check for in headings
+            
+        Returns:
+            HeadingsAnalysis object containing heading analysis results
+        """
+        headings_analysis = HeadingsAnalysis()
+        keyword = keyword.lower()
+        
+        # Analyze H1 headings
+        h1_texts = selector.css('h1::text').getall()
+        if h1_texts:
+            h1_text = h1_texts[0].strip()  # Take first H1
+            headings_analysis.h1.append(HeadingDetail(
+                text=h1_text,
+                contains_keyword=keyword in h1_text.lower(),
+                level=1
+            ))
+            headings_analysis.h1_count = 1
+            headings_analysis.h1_contains_keyword = keyword in h1_text.lower()
+        
+        # Analyze H2 headings
+        h2_texts = selector.css('h2::text').getall()
+        h2_keywords = []
+        h2_contains_keyword_count = 0
+        
+        for h2_text in h2_texts:
+            h2_text = h2_text.strip()
+            if h2_text:
+                contains_keyword = keyword in h2_text.lower()
+                headings_analysis.h2.append(HeadingDetail(
+                    text=h2_text,
+                    contains_keyword=contains_keyword,
+                    level=2
+                ))
+                if contains_keyword:
+                    h2_contains_keyword_count += 1
+                    h2_keywords.append(h2_text)
+        
+        headings_analysis.h2_count = len(h2_texts)
+        headings_analysis.h2_contains_keyword_count = h2_contains_keyword_count
+        headings_analysis.h2_keywords = h2_keywords
+        
+        # Analyze H3 headings
+        h3_texts = selector.css('h3::text').getall()
+        for h3_text in h3_texts:
+            h3_text = h3_text.strip()
+            if h3_text:
+                headings_analysis.h3.append(HeadingDetail(
+                    text=h3_text,
+                    contains_keyword=keyword in h3_text.lower(),
+                    level=3
+                ))
+        
+        # Analyze H4 headings
+        h4_texts = selector.css('h4::text').getall()
+        for h4_text in h4_texts:
+            h4_text = h4_text.strip()
+            if h4_text:
+                headings_analysis.h4.append(HeadingDetail(
+                    text=h4_text,
+                    contains_keyword=keyword in h4_text.lower(),
+                    level=4
+                ))
+        
+        # Analyze H5 headings
+        h5_texts = selector.css('h5::text').getall()
+        for h5_text in h5_texts:
+            h5_text = h5_text.strip()
+            if h5_text:
+                headings_analysis.h5.append(HeadingDetail(
+                    text=h5_text,
+                    contains_keyword=keyword in h5_text.lower(),
+                    level=5
+                ))
+        
+        # Analyze H6 headings
+        h6_texts = selector.css('h6::text').getall()
+        for h6_text in h6_texts:
+            h6_text = h6_text.strip()
+            if h6_text:
+                headings_analysis.h6.append(HeadingDetail(
+                    text=h6_text,
+                    contains_keyword=keyword in h6_text.lower(),
+                    level=6
+                ))
+        
+        # Calculate total headings and keyword presence
+        headings_analysis.total_headings = (
+            headings_analysis.h1_count +
+            headings_analysis.h2_count +
+            len(headings_analysis.h3) +
+            len(headings_analysis.h4) +
+            len(headings_analysis.h5) +
+            len(headings_analysis.h6)
         )
+        
+        # Check if keyword appears in any heading
+        headings_analysis.keyword_present_in_any = (
+            headings_analysis.h1_contains_keyword or
+            headings_analysis.h2_contains_keyword_count > 0 or
+            any(h.contains_keyword for h in headings_analysis.h3) or
+            any(h.contains_keyword for h in headings_analysis.h4) or
+            any(h.contains_keyword for h in headings_analysis.h5) or
+            any(h.contains_keyword for h in headings_analysis.h6)
+        )
+        
+        return headings_analysis
 
     def _extract_main_text(self, selector: Selector) -> str:
         """Extract main content text using basic heuristics (can be improved)."""
@@ -560,6 +640,41 @@ class SEOAnalyzer:
 
         return SchemaAnalysis(types_found=sorted(list(types_found)))
 
+    def _analyze_viewport(self, selector: Selector) -> Optional[str]:
+        """
+        Analyze the viewport meta tag content.
+        
+        Args:
+            selector: Parsel Selector object containing the page HTML
+            
+        Returns:
+            The viewport content string if found, None otherwise
+        """
+        viewport_content = selector.css('meta[name="viewport"]::attr(content)').get()
+        return viewport_content.strip() if viewport_content else None
+
+    def _analyze_canonical(self, selector: Selector, base_url: str) -> Optional[str]:
+        """
+        Analyze the canonical link tag and return its absolute URL.
+        
+        Args:
+            selector: Parsel Selector object containing the page HTML
+            base_url: The base URL of the page for resolving relative URLs
+            
+        Returns:
+            The absolute canonical URL if found, None otherwise
+        """
+        try:
+            canonical_href = selector.css('link[rel="canonical"]::attr(href)').get()
+            if not canonical_href:
+                return None
+                
+            # Resolve relative URL to absolute
+            return urljoin(base_url, canonical_href.strip())
+        except Exception as e:
+            logger.warning(f"Error processing canonical URL: {e}")
+            return None
+
     async def analyze_page(self, url: str, keyword: str) -> Dict[str, Any]:
         """Analyze a single page for SEO metrics."""
         try:
@@ -576,6 +691,10 @@ class SEOAnalyzer:
             # Extract title and meta description
             title = selector.css('title::text').get() or ''
             meta_description = selector.css('meta[name="description"]::attr(content)').get() or ''
+
+            # Analyze viewport and canonical tags
+            viewport_content = self._analyze_viewport(selector)
+            canonical_url = self._analyze_canonical(selector, url)
 
             # Extract headings
             headings = []
@@ -737,7 +856,9 @@ class SEOAnalyzer:
                 links=links_analysis,
                 images=images_analysis,
                 schema=schema_analysis,
-                performance=performance
+                performance=performance,
+                viewport_content=viewport_content,
+                canonical_url=canonical_url
             )
 
             return {

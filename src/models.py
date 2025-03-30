@@ -6,20 +6,70 @@ from pydantic import BaseModel, HttpUrl, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 
-class AnalysisRequest(BaseModel):
-    """Request model for the /analyze endpoint."""
-    url: HttpUrl
-    keyword: str
-    country: Optional[str] = None
+# --- Define Sub-Analysis Models FIRST ---
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "url": "https://example.com",
-                "keyword": "example keyword",
-                "country": "US"
-            }
-        }
+class TitleAnalysis(BaseModel):
+    """Analysis results for the page title."""
+    text: Optional[str] = None
+    length: int = 0
+    keyword_present: bool = False
+    position: Optional[str] = None
+
+class MetaDescriptionAnalysis(BaseModel):
+    """Analysis results for the meta description."""
+    text: Optional[str] = None
+    length: int = 0
+    keyword_present: bool = False
+
+class HeadingDetail(BaseModel):
+    """Details for a single heading."""
+    text: str
+    contains_keyword: bool
+    level: int
+
+class HeadingsAnalysis(BaseModel):
+    """Analysis results for page headings."""
+    h1: List[HeadingDetail] = []
+    h2: List[HeadingDetail] = []
+    h3: List[HeadingDetail] = []
+    h4: List[HeadingDetail] = []
+    h5: List[HeadingDetail] = []
+    h6: List[HeadingDetail] = []
+    h1_count: int = 0
+    h1_contains_keyword: bool = False
+    h2_count: int = 0
+    h2_contains_keyword_count: int = 0
+    h2_keywords: List[str] = []
+    total_headings: int = 0
+    keyword_present_in_any: bool = False
+
+class ContentAnalysis(BaseModel):
+    """Analysis results for page content."""
+    word_count: int = 0
+    keyword_count: int = 0
+    keyword_density: float = 0.0
+    readability: Dict[str, float] = {}
+
+class LinksAnalysis(BaseModel):
+    """Analysis results for page links."""
+    total_links: int = 0
+    internal_links: int = 0
+    external_links: int = 0
+    broken_links: List[str] = []
+
+class ImagesAnalysis(BaseModel):
+    """Analysis results for page images."""
+    image_count: int = 0
+    alts_missing: int = 0
+    alts_with_keyword: int = 0
+    images: List[Dict[str, str]] = []
+
+class SchemaAnalysis(BaseModel):
+    """Analysis results for schema markup."""
+    types_found: List[str] = []
+    schema_data: List[Dict[str, Any]] = []
+
+# --- Define Main Page Analysis Model LAST (among these) ---
 
 class PageAnalysis(BaseModel):
     """Detailed analysis results for a single page."""
@@ -31,11 +81,8 @@ class PageAnalysis(BaseModel):
     links: Optional[LinksAnalysis] = None
     images: Optional[ImagesAnalysis] = None
     schema: Optional[SchemaAnalysis] = None
-    performance: Optional[Dict[str, Any]] = None  # Added from existing implementation
-    benchmarks: Optional[Dict[str, Any]] = None
-    recommendations: Optional[List[Dict[str, Any]]] = None
-    viewport_content: Optional[str] = None  # Content of the viewport meta tag
-    canonical_url: Optional[str] = None  # Absolute URL of the canonical link tag
+    viewport_content: Optional[str] = None
+    canonical_url: Optional[str] = None
 
     class Config:
         json_schema_extra = {
@@ -57,25 +104,37 @@ class PageAnalysis(BaseModel):
             }
         }
 
+# --- API Request/Response Models ---
+
+class SerpResult(BaseModel):
+    """Model for SERP result data."""
+    url: str
+    title: str
+    snippet: str
+    position: int
+    domain: str
+    path: str
+    full_url: str
+    is_competitor: bool = False
+
+class AnalysisRequest(BaseModel):
+    """Request model for page analysis."""
+    url: HttpUrl
+    keyword: str
+    max_competitors: int = Field(default=10, ge=1, le=20)
+
 class AnalysisResponse(BaseModel):
-    """Response model for the /analyze endpoint."""
-    input: AnalysisRequest
+    """Response model for page analysis."""
     status: str
     target_analysis: Optional[PageAnalysis] = None
-    competitor_analyses: Optional[List[PageAnalysis]] = None
+    competitor_analyses: List[PageAnalysis] = []
     benchmarks: Optional[Dict[str, Any]] = None
     recommendations: Optional[List[Dict[str, Any]]] = None
-    error_message: Optional[str] = None
-    warning: Optional[str] = None
+    error: Optional[str] = None
 
     class Config:
         json_schema_extra = {
             "example": {
-                "input": {
-                    "url": "https://example.com",
-                    "keyword": "example keyword",
-                    "country": "US"
-                },
                 "status": "success",
                 "target_analysis": {
                     "url": "https://example.com",
@@ -104,98 +163,6 @@ class AnalysisResponse(BaseModel):
                         "suggestion": "Add more relevant content"
                     }
                 ],
-                "warning": "Some competitors could not be analyzed"
+                "error": None
             }
-        }
-
-class SerpResult(BaseModel):
-    """Represents a single organic result from SERP API."""
-    url: str
-    title: str
-    snippet: Optional[str] = None
-
-class TitleAnalysis(BaseModel):
-    """Analysis results for the page title."""
-    text: Optional[str] = None
-    length: int = 0
-    keyword_present: bool = False
-    position: Optional[str] = None  # 'start', 'middle', 'end', or None
-
-class MetaDescriptionAnalysis(BaseModel):
-    """Analysis results for the meta description."""
-    text: Optional[str] = None
-    length: int = 0
-    keyword_present: bool = False
-
-class HeadingDetail(BaseModel):
-    """Details for a single heading."""
-    text: str
-    contains_keyword: bool
-    level: int
-
-class HeadingsAnalysis(BaseModel):
-    """Analysis results for page headings."""
-    h1: List[HeadingDetail] = []
-    h2: List[HeadingDetail] = []
-    h3: List[HeadingDetail] = []
-    h4: List[HeadingDetail] = []
-    h5: List[HeadingDetail] = []
-    h6: List[HeadingDetail] = []
-    h1_count: int = 0
-    h1_contains_keyword: bool = False
-    h2_count: int = 0
-    h2_contains_keyword_count: int = 0
-    h2_keywords: List[str] = []  # Preserved from existing implementation
-    total_headings: int = 0  # Total count of all headings
-    keyword_present_in_any: bool = False  # Whether keyword appears in any heading
-
-class ContentAnalysis(BaseModel):
-    """Analysis results for page content."""
-    word_count: int = 0
-    readability_score: Optional[float] = None  # e.g., Flesch-Kincaid Grade Level
-    keyword_density: float = 0.0  # Percentage
-    keyword_count: int = 0
-
-class LinksAnalysis(BaseModel):
-    """Analysis results for page links."""
-    internal_links: int = 0
-    external_links: int = 0
-    broken_links: List[str] = []  # Added from existing implementation
-
-class ImagesAnalysis(BaseModel):
-    """Analysis results for page images."""
-    image_count: int = 0
-    alts_missing: int = 0
-    alts_with_keyword: int = 0
-    images: List[Dict[str, str]] = []  # Preserved from existing implementation
-
-class SchemaAnalysis(BaseModel):
-    """Analysis results for schema.org markup."""
-    types_found: List[str] = []  # List of @type values found
-    schema_data: List[Dict[str, Any]] = []  # Preserved from existing implementation
-
-class AnalysisRequest(BaseModel):
-    """Request model for page analysis."""
-    url: HttpUrl = Field(..., description="The URL of the page to analyze")
-    keyword: str = Field(..., description="The main keyword to analyze for")
-    country: Optional[str] = Field('us', description="Two-letter country code for SERP analysis")
-    competitor_urls: Optional[List[HttpUrl]] = Field(None, description="Optional list of competitor URLs to benchmark against")
-
-    class Config:
-        schema_extra = {
-            "example": {
-                "url": "https://mardenseo.com",
-                "keyword": "seo tools",
-                "country": "us",
-                "competitor_urls": ["https://competitor1.com", "https://competitor2.com"]
-            }
-        }
-
-class AnalysisResponse(BaseModel):
-    """Response model containing the analysis results."""
-    status: str = "success"
-    target_analysis: Optional[PageAnalysis] = None  # Analysis of the target URL
-    competitor_analyses: Optional[List[PageAnalysis]] = None  # Detailed analysis of competitors
-    benchmarks: Optional[Dict[str, Any]] = None  # Benchmark metrics
-    recommendations: Optional[List[Dict[str, Any]]] = None  # SEO recommendations
-    error_message: Optional[str] = None  # Error message if status is "error" 
+        } 

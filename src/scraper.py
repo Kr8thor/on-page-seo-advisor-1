@@ -848,7 +848,8 @@ class SEOAnalyzer:
 
     def benchmark_analysis(self, target_analysis: PageAnalysis, competitor_analyses: List[PageAnalysis]) -> Dict[str, Any]:
         """
-        Calculates benchmark metrics based on competitor data.
+        Calculates benchmark metrics (average, median) based on competitor data.
+        Accesses specific count attributes instead of using len() on models.
 
         Args:
             target_analysis: The PageAnalysis object for the target URL.
@@ -859,256 +860,197 @@ class SEOAnalyzer:
         """
         logger.info(f"Benchmarking {target_analysis.url} against {len(competitor_analyses)} competitors.")
 
-        benchmarks: Dict[str, Dict[str, Optional[float]]] = {}
-        if not competitor_analyses:
-            logger.warning("No competitor analyses available for benchmarking.")
-            return benchmarks
+        benchmarks: Dict[str, Dict[str, Optional[float]]] = {} # Structure: {'metric_name': {'avg': X, 'median': Y}}
 
-        # Define metrics to benchmark
+        if not competitor_analyses:
+             logger.warning("No competitor analyses available for benchmarking.")
+             return benchmarks # Return empty benchmarks dict
+
+        # Define metrics and their attribute paths (POINT TO SPECIFIC COUNT FIELDS)
         metrics_to_benchmark = {
-            'title_length': lambda x: x.title.length if x.title else 0,
-            'meta_description_length': lambda x: x.meta_description.length if x.meta_description else 0,
-            'word_count': lambda x: x.content.word_count if x.content else 0,
-            'heading_count': lambda x: len(x.headings) if x.headings else 0,
-            'image_count': lambda x: len(x.images) if x.images else 0,
-            'link_count': lambda x: len(x.links) if x.links else 0
+            'title_length': ('title', 'length'),
+            'meta_description_length': ('meta_description', 'length'),
+            'h1_count': ('headings', 'h1_count'),
+            'h2_count': ('headings', 'h2_count'),
+            'image_count': ('images', 'image_count'),
+            'internal_link_count': ('links', 'internal_links'),
+            'external_link_count': ('links', 'external_links'),
+            'word_count': ('content', 'word_count'),
+            'readability_score': ('content', 'readability_score'),
+            'keyword_density': ('content', 'keyword_density'),
+            'images_alts_missing': ('images', 'alts_missing')
         }
 
-        # Calculate benchmarks for each metric
-        for metric_name, metric_func in metrics_to_benchmark.items():
-            competitor_values = []
+        for key, path_tuple in metrics_to_benchmark.items():
+            values = []
             for comp_analysis in competitor_analyses:
-                try:
-                    value = metric_func(comp_analysis)
-                    if value is not None:
-                        competitor_values.append(value)
-                except Exception as e:
-                    logger.warning(f"Error calculating {metric_name} for competitor {comp_analysis.url}: {e}")
-                    continue
+                # Use the safe get_nested helper function
+                current_val = get_nested(comp_analysis, list(path_tuple))
 
-            if competitor_values:
-                benchmarks[metric_name] = {
-                    'avg': sum(competitor_values) / len(competitor_values),
-                    'median': sorted(competitor_values)[len(competitor_values) // 2]
-                }
-            else:
-                benchmarks[metric_name] = {'avg': None, 'median': None}
+                if current_val is not None and isinstance(current_val, (int, float)):
+                    values.append(current_val)
+
+            if values:
+                try:
+                    avg = round(statistics.mean(values), 2)
+                except statistics.StatisticsError: avg = None
+                try:
+                    median = round(statistics.median(values), 2)
+                except statistics.StatisticsError: median = None
+
+                if avg is not None or median is not None:
+                     benchmarks[key] = {'avg': avg, 'median': median}
 
         logger.info(f"Finished benchmarking. Calculated {len(benchmarks)} benchmark metrics.")
         return benchmarks
 
     def generate_recommendations(self, target_analysis: PageAnalysis, benchmarks: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
-        Generate actionable SEO recommendations based on analysis and benchmarks.
-        
+        Generates actionable SEO recommendations based on the target analysis object
+        and calculated benchmarks dictionary. Accesses specific count attributes.
+
         Args:
-            target_analysis: PageAnalysis object for the target page
-            benchmarks: Dictionary containing benchmark metrics
-            
+            target_analysis: The PageAnalysis object for the target page.
+            benchmarks: A dictionary containing the calculated benchmark data.
+
         Returns:
-            List of recommendation dictionaries with text and severity
+            A list of recommendation dictionaries.
         """
-        recommendations = []
-        
-        # Title recommendations
+        recommendations: List[Dict[str, Any]] = []
+        url = target_analysis.url
+        logger.info(f"Generating recommendations for {url}")
+
+        # Title Rules
         try:
-            if target_analysis.title:
-                title_len = len(target_analysis.title.text)
-                bm_title_len_avg = benchmarks.get('title_length', {}).get('average', 0)
-                
-                if title_len < 30:
-                    recommendations.append({
-                        'type': 'Title',
-                        'severity': 'high',
-                        'text': f"Title is too short ({title_len} chars). Current title: '{target_analysis.title.text}'. Aim for 30-60 characters to ensure proper display in search results. Learn more: https://developers.google.com/search/docs/appearance/title"
-                    })
-                elif title_len > 60:
-                    recommendations.append({
-                        'type': 'Title',
-                        'severity': 'high',
-                        'text': f"Title is too long ({title_len} chars). Current title: '{target_analysis.title.text}'. Keep it under 60 characters to avoid truncation in search results. Learn more: https://developers.google.com/search/docs/appearance/title"
-                    })
-                
-                if not target_analysis.title.keyword_present:
-                    recommendations.append({
-                        'type': 'Title',
-                        'severity': 'high',
-                        'text': f"Primary keyword not found in title. Current title: '{target_analysis.title.text}'. Include it naturally for better SEO. Learn more: https://developers.google.com/search/docs/appearance/title"
-                    })
-                
-                if title_len < bm_title_len_avg:
-                    recommendations.append({
-                        'type': 'Title',
-                        'severity': 'medium',
-                        'text': f"Title length ({title_len} chars) is shorter than competitor average ({bm_title_len_avg:.0f}). Consider adding more relevant terms while staying within 60 characters. Learn more: https://developers.google.com/search/docs/appearance/title"
-                    })
-        except Exception as e:
-            logger.error(f"Error generating title recommendations: {e}")
-        
-        # Meta description recommendations
+            title_data = target_analysis.title
+            if title_data:
+                title_len = title_data.length
+                title_kw = title_data.keyword_present
+                title_pos = title_data.position
+                bm_title_len_avg = benchmarks.get('title_length', {}).get('avg')
+
+                if title_len == 0:
+                    recommendations.append({'type': 'Title', 'severity': 'High', 'text': 'Page is missing a Title tag.', 'resource_link': 'https://moz.com/learn/seo/title-tag'})
+                else:
+                    if not title_kw:
+                        recommendations.append({'type': 'Title', 'severity': 'High', 'text': f"Primary keyword not found in the Title tag ('{title_data.text[:60]}...'). Include it naturally.", 'resource_link': 'https://moz.com/learn/seo/title-tag'})
+                    if bm_title_len_avg is not None and title_len < bm_title_len_avg * 0.8:
+                         recommendations.append({'type': 'Title', 'severity': 'Medium', 'text': f"Title length ({title_len}) is shorter than competitor average ({bm_title_len_avg:.0f}). Consider adding more relevant terms.", 'resource_link': 'https://moz.com/learn/seo/title-tag'})
+                    elif title_len > 65:
+                         recommendations.append({'type': 'Title', 'severity': 'Low', 'text': f"Title length ({title_len}) may be truncated in search results (ideal max ~60-65 chars).", 'resource_link': 'https://moz.com/learn/seo/title-tag' })
+        except Exception as e: logger.warning(f"Error generating title recommendations: {e}", exc_info=True)
+
+        # Meta Description Rules
         try:
-            if target_analysis.meta_description:
-                meta_len = len(target_analysis.meta_description.text)
-                bm_meta_len_avg = benchmarks.get('meta_description_length', {}).get('average', 0)
-                
-                if meta_len < 120:
-                    recommendations.append({
-                        'type': 'Meta Description',
-                        'severity': 'high',
-                        'text': f"Meta description is too short ({meta_len} chars). Current description: '{target_analysis.meta_description.text}'. Aim for 120-160 characters to provide comprehensive information. Learn more: https://developers.google.com/search/docs/appearance/snippet"
-                    })
-                elif meta_len > 160:
-                    recommendations.append({
-                        'type': 'Meta Description',
-                        'severity': 'high',
-                        'text': f"Meta description is too long ({meta_len} chars). Current description: '{target_analysis.meta_description.text}'. Keep it under 160 characters to avoid truncation in search results. Learn more: https://developers.google.com/search/docs/appearance/snippet"
-                    })
-                
-                if not target_analysis.meta_description.keyword_present:
-                    recommendations.append({
-                        'type': 'Meta Description',
-                        'severity': 'high',
-                        'text': f"Primary keyword not found in meta description. Current description: '{target_analysis.meta_description.text}'. Include it naturally for better visibility. Learn more: https://developers.google.com/search/docs/appearance/snippet"
-                    })
-                
-                if meta_len < bm_meta_len_avg:
-                    recommendations.append({
-                        'type': 'Meta Description',
-                        'severity': 'medium',
-                        'text': f"Meta description length ({meta_len} chars) is shorter than competitor average ({bm_meta_len_avg:.0f}). Consider adding more relevant content while staying within 160 characters. Learn more: https://developers.google.com/search/docs/appearance/snippet"
-                    })
-        except Exception as e:
-            logger.error(f"Error generating meta description recommendations: {e}")
-        
-        # Headings recommendations
+            meta_data = target_analysis.meta_description
+            if meta_data:
+                meta_len = meta_data.length
+                meta_kw = meta_data.keyword_present
+                bm_meta_len_avg = benchmarks.get('meta_description_length', {}).get('avg')
+
+                if meta_len == 0:
+                    recommendations.append({'type': 'Meta Description', 'severity': 'High', 'text': 'Page is missing a meta description.', 'resource_link': 'https://moz.com/learn/seo/meta-description'})
+                else:
+                    if not meta_kw:
+                        recommendations.append({'type': 'Meta Description', 'severity': 'High', 'text': f"Primary keyword not found in meta description ('{meta_data.text[:60]}...'). Include it naturally.", 'resource_link': 'https://moz.com/learn/seo/meta-description'})
+                    if bm_meta_len_avg is not None and meta_len < bm_meta_len_avg * 0.8:
+                         recommendations.append({'type': 'Meta Description', 'severity': 'Medium', 'text': f"Meta description length ({meta_len}) is shorter than competitor average ({bm_meta_len_avg:.0f}). Consider adding more relevant content.", 'resource_link': 'https://moz.com/learn/seo/meta-description'})
+                    elif meta_len > 160:
+                         recommendations.append({'type': 'Meta Description', 'severity': 'Low', 'text': f"Meta description length ({meta_len}) may be truncated in search results (ideal max ~155-160 chars).", 'resource_link': 'https://moz.com/learn/seo/meta-description'})
+        except Exception as e: logger.warning(f"Error generating meta description recommendations: {e}", exc_info=True)
+
+        # Headings Rules
         try:
-            if target_analysis.headings:
-                if not target_analysis.headings.h1:
-                    recommendations.append({
-                        'type': 'Headings',
-                        'severity': 'high',
-                        'text': "No H1 heading found. Add a clear, descriptive H1 heading that includes your primary keyword. This is crucial for both SEO and accessibility. Learn more: https://developers.google.com/search/docs/crawling-indexing/rendering"
-                    })
-                elif not target_analysis.headings.h1_contains_keyword:
-                    h1_text = target_analysis.headings.h1[0].text if target_analysis.headings.h1 else ""
-                    recommendations.append({
-                        'type': 'Headings',
-                        'severity': 'high',
-                        'text': f"Primary keyword not found in the main H1 heading. Current H1: '{h1_text}'. Include it naturally for better SEO. Learn more: https://developers.google.com/search/docs/crawling-indexing/rendering"
-                    })
-                
-                if not target_analysis.headings.h2:
-                    recommendations.append({
-                        'type': 'Headings',
-                        'severity': 'medium',
-                        'text': "No H2 headings found. Add subheadings to structure your content and improve readability. This helps both users and search engines understand your content hierarchy. Learn more: https://developers.google.com/search/docs/crawling-indexing/rendering"
-                    })
-                elif target_analysis.headings.h2_contains_keyword_count == 0:
-                    recommendations.append({
-                        'type': 'Headings',
-                        'severity': 'medium',
-                        'text': f"None of your {target_analysis.headings.h2_count} H2 headings contain the primary keyword. Consider adding it naturally to relevant subheadings to improve topical relevance. Learn more: https://developers.google.com/search/docs/crawling-indexing/rendering"
-                    })
-        except Exception as e:
-            logger.error(f"Error generating headings recommendations: {e}")
-        
-        # Content recommendations
+            h_data = target_analysis.headings
+            if h_data:
+                h1_count = h_data.h1_count
+                h1_kw = h_data.h1_contains_keyword
+                h2_count = h_data.h2_count
+
+                if h1_count == 0:
+                    recommendations.append({'type': 'Headings', 'severity': 'High', 'text': 'Page is missing an H1 heading.', 'resource_link': 'https://moz.com/learn/seo/page-headings'})
+                elif h1_count > 1:
+                    recommendations.append({'type': 'Headings', 'severity': 'Medium', 'text': f'Page has multiple H1 headings ({h1_count}). Use only one H1 per page.', 'resource_link': 'https://moz.com/learn/seo/page-headings'})
+                elif not h1_kw:
+                    h1_text = h_data.h1[0].text if h_data.h1 else "[H1 text not found]"
+                    recommendations.append({'type': 'Headings', 'severity': 'High', 'text': f"Primary keyword not found in the main H1 heading ('{h1_text[:50]}...').", 'resource_link': 'https://moz.com/learn/seo/page-headings'})
+
+                if h1_count > 0 and h2_count == 0:
+                     recommendations.append({'type': 'Headings', 'severity': 'Low', 'text': 'Consider using H2 headings to structure your content sections below the H1.', 'resource_link': 'https://moz.com/learn/seo/page-headings'})
+        except Exception as e: logger.warning(f"Error generating heading recommendations: {e}", exc_info=True)
+
+        # Content Rules
         try:
-            if target_analysis.content:
-                if target_analysis.content.word_count < 300:
-                    recommendations.append({
-                        'type': 'Content',
-                        'severity': 'high',
-                        'text': f"Content is too short ({target_analysis.content.word_count} words). Aim for at least 300 words to provide comprehensive information and establish topical authority. Learn more: https://developers.google.com/search/docs/crawling-indexing/rendering"
-                    })
+            content_data = target_analysis.content
+            if content_data:
+                word_count = content_data.word_count
+                keyword_density = content_data.keyword_density
+                readability = content_data.readability
+
+                if word_count < 300:
+                    recommendations.append({'type': 'Content', 'severity': 'High', 'text': f"Content is too short ({word_count} words). Aim for at least 300 words to provide comprehensive information.", 'resource_link': 'https://moz.com/learn/seo/content-length'})
                 
-                if target_analysis.content.keyword_density < 0.5:
-                    recommendations.append({
-                        'type': 'Content',
-                        'severity': 'medium',
-                        'text': f"Keyword density is low ({target_analysis.content.keyword_density:.1f}%). Consider naturally incorporating the primary keyword more frequently in your content. Learn more: https://developers.google.com/search/docs/crawling-indexing/rendering"
-                    })
-                elif target_analysis.content.keyword_density > 3:
-                    recommendations.append({
-                        'type': 'Content',
-                        'severity': 'medium',
-                        'text': f"Keyword density is high ({target_analysis.content.keyword_density:.1f}%). Reduce keyword usage to avoid over-optimization and maintain natural readability. Learn more: https://developers.google.com/search/docs/crawling-indexing/rendering"
-                    })
-                
-                # Check readability scores
-                readability = target_analysis.content.readability
+                if keyword_density < 0.5:
+                    recommendations.append({'type': 'Content', 'severity': 'Medium', 'text': f"Keyword density is low ({keyword_density:.1f}%). Consider naturally incorporating the primary keyword more frequently.", 'resource_link': 'https://moz.com/learn/seo/keyword-density'})
+                elif keyword_density > 3:
+                    recommendations.append({'type': 'Content', 'severity': 'Medium', 'text': f"Keyword density is high ({keyword_density:.1f}%). Reduce keyword usage to avoid over-optimization.", 'resource_link': 'https://moz.com/learn/seo/keyword-density'})
+
                 if readability.get('flesch_reading_ease', 0) < 60:
-                    recommendations.append({
-                        'type': 'Content',
-                        'severity': 'medium',
-                        'text': f"Content readability score is low ({readability['flesch_reading_ease']:.0f}). Consider simplifying language, using shorter sentences, and improving content structure for better user engagement. Learn more: https://developers.google.com/search/docs/crawling-indexing/rendering"
-                    })
-        except Exception as e:
-            logger.error(f"Error generating content recommendations: {e}")
-        
-        # Images recommendations
+                    recommendations.append({'type': 'Content', 'severity': 'Medium', 'text': f"Content readability score is low ({readability['flesch_reading_ease']:.0f}). Consider simplifying language and improving structure.", 'resource_link': 'https://moz.com/learn/seo/readability'})
+        except Exception as e: logger.warning(f"Error generating content recommendations: {e}", exc_info=True)
+
+        # Images Rules
         try:
-            if target_analysis.images:
-                img_count = target_analysis.images.image_count
-                alts_missing = target_analysis.images.alts_missing
-                if img_count > 0:
+            img_data = target_analysis.images
+            if img_data:
+                img_count = img_data.image_count
+                alts_missing = img_data.alts_missing
+                alts_kw = img_data.alts_with_keyword
+
+                if img_count > 0 and alts_missing > 0:
                     perc_missing = (alts_missing / img_count) * 100
-                    if alts_missing > 0:
-                        recommendations.append({
-                            'type': 'Images',
-                            'severity': 'high',
-                            'text': f"{alts_missing} ({perc_missing:.0f}%) of {img_count} images are missing descriptive alt text. Add relevant alt text for accessibility and SEO. Learn more: https://developers.google.com/search/docs/crawling-indexing/rendering"
-                        })
-                    
-                    if target_analysis.images.alts_with_keyword == 0:
-                        recommendations.append({
-                            'type': 'Images',
-                            'severity': 'medium',
-                            'text': f"None of your {img_count} images have alt text containing the primary keyword. Consider adding it naturally to relevant image descriptions to improve topical relevance. Learn more: https://developers.google.com/search/docs/crawling-indexing/rendering"
-                        })
-        except Exception as e:
-            logger.error(f"Error generating images recommendations: {e}")
-        
-        # Schema recommendations
+                    sev = 'High' if perc_missing > 50 else ('Medium' if perc_missing > 20 else 'Low')
+                    recommendations.append({'type': 'Images', 'severity': sev, 'text': f'{alts_missing} ({perc_missing:.0f}%) of {img_count} images are missing descriptive alt text. Add alt text for accessibility and SEO.', 'resource_link': 'https://moz.com/learn/seo/alt-text'})
+        except Exception as e: logger.warning(f"Error generating image recommendations: {e}", exc_info=True)
+
+        # Schema Rules
         try:
-            if target_analysis.schema:
-                if not target_analysis.schema.types_found:
-                    recommendations.append({
-                        'type': 'Schema',
-                        'severity': 'medium',
-                        'text': "No Schema.org markup (JSON-LD) detected. Implementing relevant schema like 'Article' or 'FAQPage' can enhance search appearance and provide rich results. Learn more: https://developers.google.com/search/docs/appearance/structured-data"
-                    })
-                elif 'Article' not in target_analysis.schema.types_found:
-                    recommendations.append({
-                        'type': 'Schema',
-                        'severity': 'low',
-                        'text': f"Consider adding Article schema. Current schema types: {', '.join(target_analysis.schema.types_found)}. Article schema can improve search appearance and provide rich results. Learn more: https://developers.google.com/search/docs/appearance/structured-data"
-                    })
-        except Exception as e:
-            logger.error(f"Error generating schema recommendations: {e}")
-        
-        # Performance recommendations
+            schema_data = target_analysis.schema
+            if schema_data:
+                types_found = schema_data.types_found
+                if not types_found:
+                    recommendations.append({'type': 'Schema', 'severity': 'Low', 'text': 'No Schema.org markup (JSON-LD) detected. Consider adding relevant schema (e.g., Article, FAQPage) to enhance search appearance.', 'resource_link': 'https://developers.google.com/search/docs/appearance/structured-data/intro-structured-data'})
+                elif "Article" not in types_found and "FAQPage" not in types_found and "WebPage" in types_found:
+                    recommendations.append({'type': 'Schema', 'severity': 'Low', 'text': "Basic 'WebPage' schema found. Consider adding more specific types like 'Article' or 'FAQPage' if applicable.", 'resource_link': 'https://schema.org/docs/schemas.html'})
+        except Exception as e: logger.warning(f"Error generating schema recommendations: {e}", exc_info=True)
+
+        # Links Rules
         try:
-            if target_analysis.performance:
-                html_size = target_analysis.performance.html_size
-                text_ratio = target_analysis.performance.text_html_ratio
-                
-                if html_size and html_size > 500 * 1024:  # > 500KB
-                    recommendations.append({
-                        'type': 'Performance',
-                        'severity': 'low',
-                        'text': f'HTML size ({html_size / 1024:.0f} KB) seems large. Review for unnecessary code, large inline elements, or unoptimized assets. Learn more: https://developers.google.com/search/docs/crawling-indexing/rendering'
-                    })
-                
-                if text_ratio and text_ratio < 10:  # < 10% text
-                    recommendations.append({
-                        'type': 'Performance',
-                        'severity': 'low',
-                        'text': f'Text-to-HTML ratio ({text_ratio:.1f}%) is low. Ensure sufficient textual content relative to code for better SEO and user experience. Learn more: https://developers.google.com/search/docs/crawling-indexing/rendering'
-                    })
-        except Exception as e:
-            logger.error(f"Error generating performance recommendations: {e}")
-        
+            link_data = target_analysis.links
+            if link_data:
+                internal = link_data.internal_links
+                external = link_data.external_links
+                total_links = internal + external
+                if total_links < 5 and get_nested(target_analysis, ['content', 'word_count'], 0) > 300:
+                    recommendations.append({'type': 'Links', 'severity': 'Low', 'text': f'Only {total_links} links found. Consider adding more relevant internal and external links to support content and provide value.', 'resource_link': 'https://moz.com/learn/seo/internal-link'})
+        except Exception as e: logger.warning(f"Error generating link recommendations: {e}", exc_info=True)
+
+        # Viewport/Canonical Recommendations
+        try:
+            if target_analysis.viewport_content is None:
+                recommendations.append({'type': 'Mobile', 'severity': 'Medium', 'text': 'Viewport meta tag is missing. Add `<meta name="viewport" content="width=device-width, initial-scale=1.0">` for proper mobile rendering.', 'resource_link': 'https://developer.mozilla.org/en-US/docs/Web/HTML/Viewport_meta_tag'})
+
+            if target_analysis.canonical_url is None:
+                recommendations.append({'type': 'Technical SEO', 'severity': 'Low', 'text': 'Canonical link tag (<link rel="canonical">) not found. Add one pointing to the preferred version of this page to avoid duplicate content issues.', 'resource_link': 'https://developers.google.com/search/docs/crawling-indexing/consolidate-duplicate-urls'})
+            elif target_analysis.canonical_url != target_analysis.url:
+                recommendations.append({'type': 'Technical SEO', 'severity': 'Medium', 'text': f'Canonical URL ({target_analysis.canonical_url}) differs from the page URL ({target_analysis.url}). Verify this is intentional to consolidate duplicate content.', 'resource_link': 'https://developers.google.com/search/docs/crawling-indexing/consolidate-duplicate-urls'})
+        except Exception as e: logger.warning(f"Error generating technical recommendations: {e}", exc_info=True)
+
+        logger.info(f"Generated {len(recommendations)} recommendations for {url}")
+        # Sort recommendations by severity (High > Medium > Low)
+        severity_map = {'High': 3, 'Medium': 2, 'Low': 1}
+        recommendations.sort(key=lambda x: severity_map.get(x.get('severity', 'Low'), 0), reverse=True)
+
         return recommendations
 
     async def analyze_page_with_benchmarks(

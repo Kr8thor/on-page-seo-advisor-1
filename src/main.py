@@ -4,11 +4,11 @@ Provides endpoints for analyzing web pages and generating SEO recommendations.
 """
 import httpx
 import uuid
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Query, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.openapi.utils import get_openapi
-from typing import List, Optional
+from typing import List, Optional, Union, Dict, Any
 import os
 from dotenv import load_dotenv
 import logging
@@ -72,7 +72,8 @@ analyzer = SEOAnalyzer()
 @app.post("/analyze", response_model=AnalysisResponse)
 async def analyze_page(
     request: AnalysisRequest,
-    background_tasks: BackgroundTasks
+    background_tasks: BackgroundTasks,
+    request_id: str = Header(None)
 ):
     """
     Analyze a web page for SEO optimization.
@@ -83,6 +84,7 @@ async def analyze_page(
     Args:
         request: AnalysisRequest containing the URL and keyword to analyze
         background_tasks: FastAPI background tasks for saving results
+        request_id: Optional request ID from header
         
     Returns:
         AnalysisResponse containing the analysis results and recommendations
@@ -91,7 +93,7 @@ async def analyze_page(
         HTTPException: Various HTTP exceptions for different error scenarios
     """
     # Generate request ID for tracing
-    request_id = str(uuid.uuid4())
+    request_id = request_id or str(uuid.uuid4())
     logger.info(f"[{request_id}] Received analysis request for URL: {request.url}, Keyword: {request.keyword}")
     
     try:
@@ -123,7 +125,9 @@ async def analyze_page(
             
         # Save results to file
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        result_file = RESULTS_DIR / f"analysis_{timestamp}_{request_id}.json"
+        # Use a unique part of the request ID for the filename if available
+        safe_request_id = request_id.split('-')[0] if request_id else timestamp
+        result_file = RESULTS_DIR / f"analysis_{safe_request_id}_{timestamp}.json"
         background_tasks.add_task(
             save_analysis_results,
             result_file,
@@ -196,14 +200,15 @@ async def health_check():
         }
     }
 
-def save_analysis_results(file_path: Path, analysis: AnalysisResponse):
+def save_analysis_results(file_path: Path, analysis_data: Dict[str, Any]):
     """Save analysis results to a JSON file."""
     try:
         with open(file_path, 'w', encoding='utf-8') as f:
-            json.dump(analysis.dict(), f, indent=2, ensure_ascii=False)
+            # Dump the dictionary directly - NO .dict() call needed
+            json.dump(analysis_data, f, indent=2, ensure_ascii=False)
         logger.info(f"Analysis results saved to {file_path}")
     except Exception as e:
-        logger.error(f"Error saving analysis results: {str(e)}")
+        logger.error(f"Error saving analysis results to {file_path}: {e} (Data type: {type(analysis_data)})", exc_info=True)
 
 # Custom OpenAPI schema
 def custom_openapi():

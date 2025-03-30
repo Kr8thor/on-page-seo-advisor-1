@@ -826,7 +826,12 @@ class SEOAnalyzer:
                 logger.debug(f"No valid data found for benchmarking metric '{key}' among competitors.")
 
         # Convert PageAnalysis object to dict, add benchmarks, return dict
-        target_analysis_dict = target_analysis.dict()
+        target_analysis_dict = target_analysis.dict(exclude_unset=True)  # Use exclude_unset just in case
+        # +++ ADD LOGGING +++
+        logger.debug(f"Dictionary created by target_analysis.dict(): Keys = {list(target_analysis_dict.keys())}")
+        if 'url' not in target_analysis_dict:
+            logger.error("CRITICAL: 'url' key missing immediately after target_analysis.dict() call!")
+        # +++ END LOGGING +++
         target_analysis_dict['benchmarks'] = benchmarks
         logger.info(f"Finished benchmarking. Calculated {len(benchmarks)} benchmark metrics.")
 
@@ -1104,13 +1109,19 @@ class SEOAnalyzer:
             recommendations = self.generate_recommendations(target_analysis)
 
             logger.info("Analysis completed successfully")
-            return {
-                'status': 'success',
-                'target_analysis': target_analysis,
-                'competitor_analyses': competitor_analyses,
-                'benchmarks': benchmarks,
-                'recommendations': recommendations
+            final_result = {
+                "status": "success",
+                "target_analysis": target_analysis,
+                "competitor_analyses": competitor_analyses,
+                "benchmarks": benchmarks,
+                "recommendations": recommendations
             }
+            # +++ ADD LOGGING +++
+            logger.debug(f"Final analysis dict being nested: Keys = {list(final_result.keys())}")
+            if 'url' not in final_result:
+                logger.error("CRITICAL: 'url' key missing from analysis dict just before returning final result!")
+            # +++ END LOGGING +++
+            return final_result
 
         except Exception as e:
             logger.error(f"Critical error in analyze_page_with_benchmarks: {e}", exc_info=True)

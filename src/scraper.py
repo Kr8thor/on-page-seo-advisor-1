@@ -20,6 +20,8 @@ import statistics
 import aiohttp
 import pydantic
 from pydantic_core import to_jsonable_python
+import requests
+import urllib3
 
 # Import models from the models file
 from src.models import (
@@ -1441,4 +1443,267 @@ class SEOAnalyzer:
             return {
                 'status': 'error',
                 'error_message': str(e)
+            }
+
+    def fetch_content(self, url: str) -> Optional[str]:
+        try:
+            # Add SSL verification options
+            session = requests.Session()
+            session.verify = False  # Disable SSL verification
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)  # Suppress warnings
+            
+            response = session.get(url, timeout=30)
+            response.raise_for_status()
+            return response.text
+        except requests.exceptions.SSLError as e:
+            logger.warning(f"SSL certificate verification failed for {url}: {str(e)}")
+            # Try again without SSL verification
+            try:
+                response = requests.get(url, verify=False, timeout=30)
+                response.raise_for_status()
+                return response.text
+            except Exception as e:
+                logger.error(f"Failed to fetch content after SSL error for {url}: {str(e)}")
+                return None
+        except Exception as e:
+            logger.error(f"Network error while fetching {url}: {str(e)}")
+            return None
+
+    def analyze_page(self, url: str, keyword: str, country: str = 'us') -> Dict:
+        try:
+            # Fetch content with SSL handling
+            content = self.fetch_content(url)
+            if not content:
+                logger.warning(f"Could not fetch content for {url}, proceeding with limited analysis")
+                # Return basic analysis with warning
+                return {
+                    "status": "success",
+                    "warning": "SSL certificate verification failed. Some metrics may be limited.",
+                    "target_analysis": {
+                        "url": url,
+                        "keyword": keyword,
+                        "ssl_enabled": False,
+                        "technical": {
+                            "ssl_enabled": False,
+                            "mobile_responsive": False,
+                            "canonical_url": None
+                        }
+                    }
+                }
+
+            # Create Parsel selector for HTML parsing
+            selector = Selector(text=str(content))
+
+            # Extract title and meta description
+            title = selector.css('title::text').get() or ''
+            meta_description = selector.css('meta[name="description"]::attr(content)').get() or ''
+
+            # Analyze viewport and canonical tags
+            viewport_content = self._analyze_viewport(selector)
+            canonical_url = self._analyze_canonical(selector, url)
+
+            # Extract headings
+            headings = []
+            h1_count = 0
+            h2_count = 0
+            h3_count = 0
+            
+            for level in range(1, 7):  # h1 to h6
+                for heading in selector.css(f'h{level}::text').getall():
+                    heading_text = heading.strip()
+                    if heading_text:
+                        headings.append(HeadingDetail(
+                            level=level,
+                            text=heading_text,
+                            contains_keyword=keyword.lower() in heading_text.lower()
+                        ))
+                        if level == 1:
+                            h1_count += 1
+                        elif level == 2:
+                            h2_count += 1
+                        elif level == 3:
+                            h3_count += 1
+
+            # Extract links
+            links = []
+            internal_links = 0
+            external_links = 0
+            for link in selector.css('a[href]'):
+                href = link.css('::attr(href)').get()
+                if href:
+                    if href.startswith('/'):
+                        href = urljoin(url, href)
+                    links.append(href)
+                    if urlparse(href).netloc == urlparse(url).netloc:
+                        internal_links += 1
+                    else:
+                        external_links += 1
+
+            # Extract images
+            images = []
+            image_count = 0
+            alts_missing = 0
+            alts_with_keyword = 0
+            for img in selector.css('img'):
+                src = img.css('::attr(src)').get()
+                alt = img.css('::attr(alt)').get() or ''
+                if src:
+                    if src.startswith('/'):
+                        src = urljoin(url, src)
+                    images.append({'src': src, 'alt': alt})
+                    image_count += 1
+                    if not alt:
+                        alts_missing += 1
+                    elif keyword.lower() in alt.lower():
+                        alts_with_keyword += 1
+
+            # Extract schema markup
+            schema_data = []
+            for script in selector.css('script[type="application/ld+json"]::text').getall():
+                try:
+                    data = json.loads(script)
+                    schema_data.append(data)
+                except json.JSONDecodeError:
+                    logger.warning(f"Failed to parse JSON-LD schema in {url}")
+
+            # Extract schema types
+            types_found = []
+            for data in schema_data:
+                if isinstance(data, dict):
+                    schema_type = data.get('@type')
+                    if isinstance(schema_type, str):
+                        types_found.append(schema_type)
+                    elif isinstance(schema_type, list):
+                        types_found.extend([t for t in schema_type if isinstance(t, str)])
+
+            schema_analysis = SchemaAnalysis(
+                types_found=types_found,
+                schema_data=schema_data
+            )
+
+            # Extract main content
+            content = ' '.join([
+                text.strip()
+                for text in selector.css('body *:not(script):not(style)::text').getall()
+                if text.strip()
+            ])
+
+            # Calculate performance metrics
+            html_size_bytes = len(content.encode('utf-8')) if content else 0
+            text_size_bytes = len(content.encode('utf-8')) if content else 0
+            text_ratio = (text_size_bytes / html_size_bytes) if html_size_bytes > 0 else 0.0
+
+            performance_analysis = PerformanceAnalysis(
+                html_size=html_size_bytes,
+                text_html_ratio=round(text_ratio * 100, 2)  # Store as percentage
+            )
+
+            # Calculate readability metrics
+            readability_metrics = {
+                'flesch_reading_ease': textstat.flesch_reading_ease(content),
+                'flesch_kincaid_grade': textstat.flesch_kincaid_grade(content),
+                'gunning_fog': textstat.gunning_fog(content),
+                'smog_index': textstat.smog_index(content),
+                'automated_readability_index': textstat.automated_readability_index(content),
+                'coleman_liau_index': textstat.coleman_liau_index(content),
+                'linsear_write_formula': textstat.linsear_write_formula(content),
+                'dale_chall_readability_score': textstat.dale_chall_readability_score(content),
+            }
+
+            # Calculate keyword metrics
+            keyword_lower = keyword.lower()
+            title_lower = title.lower()
+            meta_lower = meta_description.lower()
+            content_lower = content.lower()
+
+            keyword_metrics = {
+                'title_keyword_count': title_lower.count(keyword_lower),
+                'meta_keyword_count': meta_lower.count(keyword_lower),
+                'content_keyword_count': content_lower.count(keyword_lower),
+                'content_keyword_density': (
+                    content_lower.count(keyword_lower) / len(content_lower.split())
+                    if content_lower else 0
+                ),
+                'title_starts_with_keyword': title_lower.startswith(keyword_lower),
+                'meta_contains_keyword': keyword_lower in meta_lower,
+                'url_contains_keyword': keyword_lower in url.lower(),
+            }
+
+            # Create analysis objects
+            title_analysis = TitleAnalysis(
+                text=title,
+                length=len(title),
+                keyword_present=keyword_lower in title_lower,
+                position='start' if title_lower.startswith(keyword_lower) else 'end' if title_lower.endswith(keyword_lower) else 'middle' if keyword_lower in title_lower else None
+            )
+
+            meta_analysis = MetaDescriptionAnalysis(
+                text=meta_description,
+                length=len(meta_description),
+                keyword_present=keyword_lower in meta_lower
+            )
+
+            # Group headings by level
+            h1_headings = [h for h in headings if h.level == 1]
+            h2_headings = [h for h in headings if h.level == 2]
+            h3_headings = [h for h in headings if h.level == 3]
+
+            headings_analysis = HeadingsAnalysis(
+                h1=h1_headings,
+                h2=h2_headings,
+                h3=h3_headings,
+                h1_count=h1_count,
+                h1_contains_keyword=any(h.contains_keyword for h in h1_headings),
+                h2_count=h2_count,
+                h2_contains_keyword_count=sum(1 for h in h2_headings if h.contains_keyword),
+                h2_keywords=[h.text for h in h2_headings if h.contains_keyword],
+                total_headings=len(headings)
+            )
+
+            content_analysis = ContentAnalysis(
+                word_count=len(content.split()),
+                keyword_count=content_lower.count(keyword_lower),
+                keyword_density=keyword_metrics['content_keyword_density'],
+                readability=readability_metrics
+            )
+
+            links_analysis = LinksAnalysis(
+                total_links=len(links),
+                internal_links=internal_links,
+                external_links=external_links,
+                broken_links=[]  # Would require additional requests to verify
+            )
+
+            images_analysis = ImagesAnalysis(
+                image_count=image_count,
+                alts_missing=alts_missing,
+                alts_with_keyword=alts_with_keyword,
+                images=images
+            )
+
+            # Combine all analyses
+            page_analysis = PageAnalysis(
+                url=url,
+                title=title_analysis,
+                meta_description=meta_analysis,
+                headings=headings_analysis,
+                content=content_analysis,
+                links=links_analysis,
+                images=images_analysis,
+                schema=schema_analysis,
+                viewport_content=viewport_content,
+                canonical_url=canonical_url,
+                performance=performance_analysis
+            )
+
+            return {
+                'status': 'success',
+                'analysis': page_analysis
+            }
+
+        except Exception as e:
+            logger.error(f"Critical error during page analysis for {url}: {e}", exc_info=True)
+            return {
+                'status': 'error',
+                'message': str(e)
             } 

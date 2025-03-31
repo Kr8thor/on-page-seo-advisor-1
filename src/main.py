@@ -17,6 +17,7 @@ import json
 from pathlib import Path
 from src.scraper import SEOAnalyzer, SerpApiError
 from src.models import AnalysisRequest, AnalysisResponse, PageAnalysis
+import re
 
 # Load environment variables
 load_dotenv()
@@ -54,10 +55,18 @@ app = FastAPI(
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=[
+        "https://audit.mardenseo.com",
+        "http://audit.mardenseo.com",
+        "https://onpage-seo-analyzer.vercel.app",
+        "http://localhost:3000",
+        "http://localhost:5000"
+    ],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=3600
 )
 
 # Verify required environment variables
@@ -72,11 +81,34 @@ RESULTS_DIR.mkdir(exist_ok=True)
 # Initialize analyzer
 analyzer = SEOAnalyzer()
 
-@app.post("/analyze")  # Return raw dict for debugging
+# Add country code validation
+VALID_COUNTRY_CODES = {
+    'us', 'gb', 'ca', 'au', 'nz', 'ie', 'de', 'fr', 'es', 'it',
+    'jp', 'kr', 'cn', 'in', 'br', 'mx', 'ru', 'za'
+}
+
+def normalize_country_code(country: str) -> str:
+    """Normalize and validate country code."""
+    if not country:
+        return 'us'
+    
+    # Clean and normalize the input
+    normalized = country.lower().strip()
+    
+    # If it's already a valid 2-letter code
+    if normalized in VALID_COUNTRY_CODES:
+        return normalized
+    
+    # Default to 'us' if invalid
+    logger.warning(f"Invalid country code '{country}', defaulting to 'us'")
+    return 'us'
+
+@app.post("/analyze")
 async def analyze_page(
     request: AnalysisRequest,
     background_tasks: BackgroundTasks,
-    request_id: str = Header(None)  # Keep request_id for logging
+    request_id: str = Header(None),  # Keep request_id for logging
+    force_refresh: bool = Query(False, description="Set to true to bypass cache")
 ):
     """
     Analyze a web page for SEO optimization.
@@ -88,16 +120,24 @@ async def analyze_page(
         request: AnalysisRequest containing the URL and keyword to analyze
         background_tasks: FastAPI background tasks for saving results
         request_id: Optional request ID from header
+        force_refresh: If True, bypasses the cache and forces a fresh analysis
         
     Returns:
-        Dict containing the analysis results (temporarily simplified for debugging)
+        Dict containing the analysis results
         
     Raises:
         HTTPException: Various HTTP exceptions for different error scenarios
     """
     # Generate request ID for tracing
     request_id = request_id or str(uuid.uuid4())
-    logger.info(f"[{request_id}] Received analysis request for URL: {request.url}, Keyword: {request.keyword}")
+    
+    # Normalize country code
+    normalized_country = normalize_country_code(request.country)
+    if normalized_country != request.country:
+        logger.info(f"[{request_id}] Normalized country code from '{request.country}' to '{normalized_country}'")
+    request.country = normalized_country
+    
+    logger.info(f"[{request_id}] Received analysis request for URL: {request.url}, Keyword: {request.keyword}, Country: {request.country}, Force refresh: {force_refresh}")
     
     try:
         # Input validation
@@ -115,7 +155,8 @@ async def analyze_page(
             url=str(request.url),
             keyword=request.keyword,
             country=request.country,
-            request_id=request_id
+            request_id=request_id,
+            force_refresh=force_refresh  # Pass the force_refresh parameter
         )
         
         # Check analysis status
@@ -127,97 +168,48 @@ async def analyze_page(
                 detail=error_msg
             )
 
-        # --- TEMPORARY DEBUGGING RETURN ---
-        # Extract the target analysis data
+        # Extract all necessary data
         target_analysis_data = analysis_result_dict.get('analysis')
-        
-        if target_analysis_data:
-            logger.info(f"[{request_id}] Attempting to return target analysis data.")
-            try:
-                # Log the structure of the target analysis data
-                logger.debug(f"[{request_id}] Target analysis data keys: {list(target_analysis_data.keys())}")
-                logger.debug(f"[{request_id}] Target analysis data preview: {str(target_analysis_data)[:500]}...")
-                
-                # Return the raw dictionary
-                return target_analysis_data
-            except Exception as dump_error:
-                logger.error(f"[{request_id}] Error preparing target analysis data: {dump_error}", exc_info=True)
-                raise HTTPException(status_code=500, detail="Error preparing target analysis data.")
-        else:
+        competitor_summary = analysis_result_dict.get('competitor_analysis_summary', [])
+        benchmarks_dict = analysis_result_dict.get('benchmarks', {})
+        recommendations_list = analysis_result_dict.get('recommendations', [])
+        warning_msg = analysis_result_dict.get('warning')
+
+        if not target_analysis_data:
             logger.error(f"[{request_id}] No target analysis data found in result dictionary")
             raise HTTPException(status_code=500, detail="Internal error: No target analysis data available.")
-        # --- END TEMPORARY DEBUGGING RETURN ---
 
-        # --- Original Code (Commented out for Debugging) ---
-        # try:
-        #     # Extract data directly using keys from the returned dict
-        #     target_analysis_data = analysis_result_dict.get('analysis')
-        #     competitor_summary = analysis_result_dict.get('competitor_analysis_summary', [])
-        #     benchmarks_dict = analysis_result_dict.get('benchmarks')
-        #     recommendations_list = analysis_result_dict.get('recommendations')
-        #     warning_msg = analysis_result_dict.get('warning')
-        #
-        #     # Create the response model with the extracted data
-        #     response_payload = AnalysisResponse(
-        #         input=request,
-        #         status="success",
-        #         target_analysis=PageAnalysis(**target_analysis_data) if target_analysis_data else None,
-        #         competitor_analysis_summary=competitor_summary,
-        #         benchmarks=benchmarks_dict,
-        #         recommendations=recommendations_list,
-        #         warning=warning_msg,
-        #         error_message=None
-        #     )
-        # except Exception as model_error:
-        #     logger.error(f"[{request_id}] Error creating response model from analysis results: {model_error}", exc_info=True)
-        #     logger.debug(f"Data passed to AnalysisResponse constructor: {analysis_result_dict}")
-        #     raise HTTPException(status_code=500, detail="Internal error processing analysis results.")
-        #
-        # # Save results to file
-        # timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        # safe_request_id = request_id.split('-')[0] if request_id else timestamp
-        # result_file = RESULTS_DIR / f"analysis_{safe_request_id}_{timestamp}.json"
-        # background_tasks.add_task(
-        #     save_analysis_results,
-        #     result_file,
-        #     response_payload
-        # )
-        #
-        # logger.info(f"[{request_id}] Successfully completed analysis for {request.url}")
-        #
-        # # +++ ADD DETAILED LOGGING HERE +++
-        # try:
-        #     # Log the raw analysis result dictionary first
-        #     logger.debug(f"[{request_id}] Raw analysis result dict keys: {list(analysis_result_dict.keys())}")
-        #     
-        #     # Attempt to dump the model to a dict for logging
-        #     payload_dict_for_log = response_payload.model_dump(mode='json', exclude_unset=True)
-        #     
-        #     # Log the structure of the response payload
-        #     logger.debug(f"[{request_id}] Response payload structure:")
-        #     logger.debug(f"- Status: {response_payload.status}")
-        #     logger.debug(f"- Has target_analysis: {response_payload.target_analysis is not None}")
-        #     logger.debug(f"- Competitor summary count: {len(response_payload.competitor_analysis_summary)}")
-        #     logger.debug(f"- Has benchmarks: {bool(response_payload.benchmarks)}")
-        #     logger.debug(f"- Recommendations count: {len(response_payload.recommendations) if response_payload.recommendations else 0}")
-        #     
-        #     # Check target_analysis specifically
-        #     if response_payload.target_analysis is None:
-        #         logger.warning(f"[{request_id}] response_payload.target_analysis is None before return!")
-        #     else:
-        #         logger.debug(f"[{request_id}] Target analysis URL: {getattr(response_payload.target_analysis, 'url', 'MISSING')}")
-        #         logger.debug(f"[{request_id}] Target analysis title length: {getattr(response_payload.target_analysis, 'title', {}).get('length', 'MISSING')}")
-        #         
-        #     # Log first part of the full payload (truncated to avoid excessive logs)
-        #     logger.debug(f"[{request_id}] Response payload preview: {str(payload_dict_for_log)[:500]}...")
-        #
-        # except Exception as log_err:
-        #     logger.error(f"[{request_id}] Error logging response_payload before return: {log_err}", exc_info=True)
-        # # +++ END LOGGING +++
-        #
-        # return response_payload  # Return the Pydantic model
-        # --- End Original Code ---
-        
+        # Log the data structure for debugging
+        logger.debug(f"[{request_id}] Response structure:")
+        logger.debug(f"- Has target analysis: {bool(target_analysis_data)}")
+        logger.debug(f"- Competitor summary count: {len(competitor_summary)}")
+        logger.debug(f"- Has benchmarks: {bool(benchmarks_dict)}")
+        logger.debug(f"- Recommendations count: {len(recommendations_list)}")
+        logger.debug(f"- Has warning: {bool(warning_msg)}")
+
+        # Construct the complete response
+        response_data = {
+            "status": "success",
+            "target_analysis": target_analysis_data,
+            "competitor_analysis_summary": competitor_summary,
+            "benchmarks": benchmarks_dict,
+            "recommendations": recommendations_list,
+            "warning": warning_msg
+        }
+
+        # Save results to file
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_request_id = request_id.split('-')[0] if request_id else timestamp
+        result_file = RESULTS_DIR / f"analysis_{safe_request_id}_{timestamp}.json"
+        background_tasks.add_task(
+            save_analysis_results,
+            result_file,
+            response_data
+        )
+
+        logger.info(f"[{request_id}] Successfully completed analysis for {request.url}")
+        return response_data
+
     except SerpApiError as e:
         error_msg = str(e)
         if "rate limit" in error_msg.lower():

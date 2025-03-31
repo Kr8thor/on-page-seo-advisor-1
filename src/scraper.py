@@ -5,7 +5,7 @@ Core scraping and analysis functionality for the On-Page SEO Analyzer & Advisor.
 import httpx
 import asyncio
 import logging
-from typing import List, Optional, Dict, Any, Tuple, Union
+from typing import List, Optional, Dict, Any, Tuple, Union, Set
 from datetime import datetime, timedelta
 from dataclasses import dataclass
 from urllib.parse import urljoin, urlparse
@@ -136,6 +136,24 @@ class SerpApiError(Exception):
     """Custom exception for SERP API related errors."""
     pass
 
+# Add after other constants
+VALID_COUNTRY_CODES: Set[str] = {
+    'us', 'gb', 'ca', 'au', 'nz', 'ie', 'de', 'fr', 'es', 'it',
+    'jp', 'kr', 'cn', 'in', 'br', 'mx', 'ru', 'za'
+}
+
+def normalize_country_code(country: str) -> str:
+    """Normalize and validate a country code."""
+    if not country:
+        return 'us'
+    
+    normalized = country.lower().strip()
+    if normalized in VALID_COUNTRY_CODES:
+        return normalized
+        
+    logger.warning(f"Invalid country code '{country}', defaulting to 'us'")
+    return 'us'
+
 class SEOAnalyzer:
     """
     Main class for performing SEO analysis on web pages.
@@ -178,72 +196,163 @@ class SEOAnalyzer:
         self.default_country = os.getenv('DEFAULT_COUNTRY', 'us')
         logger.info("SEOAnalyzer initialized successfully")
 
-    async def fetch_serp_results(self, keyword: str, country: str = 'us') -> List[SerpResult]:
+    async def fetch_serp_results(self, keyword: str, country: Optional[str] = None) -> List[SerpResult]:
         """
-        Fetch SERP results for a keyword using ValueSERP API.
-        
+        Fetch SERP results using the configured API key with rate limiting
+        and country code validation.
+
         Args:
-            keyword: The search keyword
-            country: Two-letter country code (default: 'us')
-            
+            keyword: The search keyword.
+            country: Optional two-letter country code (ISO 3166-1 alpha-2) or common name.
+
         Returns:
-            List of SerpResult objects
+            List of SerpResult objects.
+
+        Raises:
+            SerpApiError: If API interaction fails.
+            ValueError: If keyword is empty.
         """
+        await self.rate_limiter.acquire()
+
+        if not keyword:
+            raise ValueError("Keyword cannot be empty")
+
+        # --- Country Code Resolution & Validation ---
+        input_country = country or self.default_country # Use provided or default
+        resolved_country_code = input_country.lower().strip() # Basic cleanup
+
+        # Simple mapping for common names (add more as needed)
+        country_map = {
+            "ireland": "ie",
+            "united kingdom": "gb",
+            "uk": "gb",
+            "united states": "us",
+            "usa": "us",
+            "germany": "de",
+            "france": "fr",
+            "spain": "es",
+            "italy": "it",
+            "netherlands": "nl",
+            "united arab emirates": "ae",
+            "uae": "ae",
+            "saudi arabia": "sa",
+            "qatar": "qa",
+        }
+
+        # Attempt mapping if input is not a 2-letter code
+        if len(resolved_country_code) > 2 or resolved_country_code not in VALID_COUNTRY_CODES:
+            resolved_country_code = country_map.get(resolved_country_code, resolved_country_code)
+
+        # Final validation: Must be in VALID_COUNTRY_CODES
+        if resolved_country_code not in VALID_COUNTRY_CODES:
+            logger.warning(f"Invalid country code '{input_country}', defaulting to '{self.default_country}'")
+            resolved_country_code = self.default_country.lower().strip()
+
+        logger.info(f"Fetching SERP for keyword='{keyword}', country_code='{resolved_country_code}'")
+
+        # Adjust params based on ValueSERP
+        params = {
+            'api_key': self.api_key,
+            'q': keyword,
+            'gl': resolved_country_code,  # Use gl parameter for country code
+            'output': 'json',
+            'num': '100',  # Request maximum results
+        }
+
+        response_for_logging = None
+
         try:
-            # Prepare API request
-            params = {
-                'api_key': self.api_key,
-                'q': keyword,
-                'gl': country,
-                'num': 100  # Get maximum results
-            }
+            async with httpx.AsyncClient(timeout=45.0) as client:
+                response = await client.get(self.serp_api_url, params=params, headers=self.headers)
+                response_for_logging = response
+                response.raise_for_status()
+
+                # --- Attempt to decode JSON using response.json() ---
+                try:
+                    data = response.json()
+                except json.JSONDecodeError as json_err:
+                    raw_text = "[Could not read response text]"
+                    try:
+                        raw_text = response.text
+                    except Exception:
+                        pass
+                    logger.error(f"Failed to decode SERP API JSON response: {json_err}. Response Text approx: {raw_text[:1000]}...")
+                    raise SerpApiError("Invalid JSON response from SERP API")
+                except Exception as e:
+                    logger.error(f"Error calling response.json(): {e}", exc_info=True)
+                    raise SerpApiError(f"Error processing SERP API response: {e}")
+
+                # --- Validate response format ---
+                if not isinstance(data, dict):
+                    raise SerpApiError("Invalid response format from SERP API")
+
+                # Check for API-specific error messages
+                request_info = data.get("request_info", {})
+                if request_info.get("success") is False:
+                    error_msg = request_info.get("message", "Unknown API Error")
+                    raise SerpApiError(f"SERP API Error: {error_msg}")
+
+                # Extract organic results
+                organic_results = data.get('organic_results', [])
+                if not organic_results:
+                    logger.warning(f"No organic results found for keyword '{keyword}' in country '{resolved_country_code}'")
+                    return []
+
+                # Process results with validation
+                results = []
+                pydantic_validation_errors = 0
+                for result in organic_results:
+                    api_url = result.get('link')
+                    api_title = result.get('title')
+                    if api_url and api_title:
+                        try:
+                            results.append(SerpResult(
+                                url=api_url,
+                                title=api_title,
+                                description=result.get('snippet', ''),
+                                position=result.get('position', 0)
+                            ))
+                        except pydantic.ValidationError as model_err:
+                            pydantic_validation_errors += 1
+                            logger.warning(f"Skipping SERP result due to model validation: {model_err}. Data: {result}")
+                    else:
+                        logger.warning(f"Skipping SERP result missing link/title: {result}")
+
+                if pydantic_validation_errors > 0:
+                    logger.warning(f"Encountered {pydantic_validation_errors} Pydantic validation errors processing SERP results")
+
+                logger.info(f"Successfully fetched {len(results)} SERP results")
+                return results[:10]  # Return top 10 validated results
+
+        except httpx.HTTPStatusError as e:
+            error_text = "[Could not read response text]"
+            if response_for_logging:
+                try:
+                    error_text = response_for_logging.text
+                except Exception:
+                    pass
+            logger.error(f"HTTP error {e.response.status_code} fetching SERP: {e}. Response text: {error_text[:500]}")
             
-            # Make API request
-            async with aiohttp.ClientSession() as session:
-                async with session.get(self.serp_api_url, params=params) as response:
-                    if response.status != 200:
-                        error_text = await response.text()
-                        logger.error(f"ValueSERP API error: {response.status} - {error_text}")
-                        return []
-                    
-                    data = await response.json()
-                    
-                    # Extract organic results
-                    organic_results = data.get('organic_results', [])
-                    if not organic_results:
-                        logger.warning(f"No organic results found for keyword: {keyword}")
-                        return []
-                    
-                    # Process each result
-                    results = []
-                    for result in organic_results:
-                        # Explicitly check for required fields from ValueSERP
-                        api_url = result.get('link')
-                        api_title = result.get('title')
-                        
-                        if api_url and api_title:
-                            try:
-                                # Create model instance with fields defined in SerpResult model
-                                serp_result = SerpResult(
-                                    url=api_url,  # Map 'link' to 'url'
-                                    title=api_title,
-                                    snippet=result.get('snippet'),  # Optional snippet
-                                    position=result.get('position'),  # Optional position
-                                    domain=result.get('domain')  # Optional domain
-                                )
-                                results.append(serp_result)
-                            except pydantic.ValidationError as model_err:
-                                # Log specific model validation error for THIS result
-                                logger.warning(f"Skipping SERP result due to model validation error: {model_err}. Data was: {result}")
-                                continue  # Skip this result and proceed with others
-                        else:
-                            logger.warning(f"Skipping SERP result with missing link or title: {result}")
-                    
-                    return results
-                    
+            if e.response.status_code == 400 and "'gl' parameter is invalid" in error_text:
+                raise SerpApiError(f"Invalid country code '{resolved_country_code}' provided for SERP API")
+            elif e.response.status_code == 401:
+                raise SerpApiError("Invalid SERP API key")
+            elif e.response.status_code == 429:
+                raise SerpApiError("SERP API rate limit exceeded")
+            else:
+                raise SerpApiError(f"HTTP error {e.response.status_code} fetching SERP results")
+
+        except httpx.TimeoutException as e:
+            logger.error(f"Timeout error fetching SERP results: {e}")
+            raise SerpApiError("SERP API request timed out")
+
+        except httpx.RequestError as e:
+            logger.error(f"Network error fetching SERP results: {e}")
+            raise SerpApiError(f"Network error: {str(e)}")
+
         except Exception as e:
-            logger.error(f"Error fetching SERP results: {e}", exc_info=True)
-            return []
+            logger.error(f"Unexpected error fetching SERP results: {e}", exc_info=True)
+            raise SerpApiError(f"Unexpected error: {str(e)}")
 
     async def fetch_page_content(self, url: str) -> Optional[str]:
         """Fetch HTML content from a URL with caching."""
@@ -380,6 +489,7 @@ class SEOAnalyzer:
         
         # Analyze H3 headings
         h3_texts = selector.css('h3::text').getall()
+        h3_count = 0
         for h3_text in h3_texts:
             h3_text = h3_text.strip()
             if h3_text:
@@ -388,9 +498,11 @@ class SEOAnalyzer:
                     contains_keyword=keyword in h3_text.lower(),
                     level=3
                 ))
+                h3_count += 1
         
         # Analyze H4 headings
         h4_texts = selector.css('h4::text').getall()
+        h4_count = 0
         for h4_text in h4_texts:
             h4_text = h4_text.strip()
             if h4_text:
@@ -399,9 +511,11 @@ class SEOAnalyzer:
                     contains_keyword=keyword in h4_text.lower(),
                     level=4
                 ))
+                h4_count += 1
         
         # Analyze H5 headings
         h5_texts = selector.css('h5::text').getall()
+        h5_count = 0
         for h5_text in h5_texts:
             h5_text = h5_text.strip()
             if h5_text:
@@ -410,9 +524,11 @@ class SEOAnalyzer:
                     contains_keyword=keyword in h5_text.lower(),
                     level=5
                 ))
+                h5_count += 1
         
         # Analyze H6 headings
         h6_texts = selector.css('h6::text').getall()
+        h6_count = 0
         for h6_text in h6_texts:
             h6_text = h6_text.strip()
             if h6_text:
@@ -421,15 +537,16 @@ class SEOAnalyzer:
                     contains_keyword=keyword in h6_text.lower(),
                     level=6
                 ))
+                h6_count += 1
         
-        # Calculate total headings and keyword presence
+        # Calculate total headings using count attributes
         headings_analysis.total_headings = (
             headings_analysis.h1_count +
             headings_analysis.h2_count +
-            len(headings_analysis.h3) +
-            len(headings_analysis.h4) +
-            len(headings_analysis.h5) +
-            len(headings_analysis.h6)
+            h3_count +
+            h4_count +
+            h5_count +
+            h6_count
         )
         
         # Check if keyword appears in any heading
@@ -578,44 +695,98 @@ class SEOAnalyzer:
         )
 
     def _analyze_schema(self, selector: Selector) -> SchemaAnalysis:
-        """Analyze schema.org markup found in JSON-LD script tags."""
+        """
+        Analyzes schema.org markup found in JSON-LD script tags.
+        Extracts unique @type values.
+        
+        Args:
+            selector: Parsel Selector object containing the page HTML
+            
+        Returns:
+            SchemaAnalysis object containing list of unique schema types found
+        """
         schema_scripts = selector.css('script[type="application/ld+json"]::text').getall()
-        types_found = set() # Use a set to automatically handle duplicates
+        types_found: Set[str] = set()  # Use a set to automatically handle duplicates
 
-        for script in schema_scripts:
+        for script_content in schema_scripts:
             try:
-                # Handle potential HTML comments within script tags
-                script_content = re.sub(r'<!--.*?-->', '', script, flags=re.DOTALL).strip()
+                # Clean potential HTML comments
+                script_content = re.sub(r'<!--.*?-->', '', script_content, flags=re.DOTALL).strip()
                 if not script_content:
                     continue
 
                 data = json.loads(script_content)
 
-                # Handle single object or list of objects
+                # --- Process data whether it's a dict or list ---
                 items_to_check = []
                 if isinstance(data, dict):
-                    items_to_check.append(data)
+                    items_to_check.append(data)  # Wrap single dict in a list
                 elif isinstance(data, list):
-                    items_to_check.extend(data)
+                    items_to_check.extend(data)  # Use the list directly
+                else:
+                    logger.warning(f"Found JSON-LD script, but content was neither dict nor list: {type(data)}")
+                    continue  # Skip non-dict/list data
 
+                # Extract @type from each item
                 for item in items_to_check:
                     if isinstance(item, dict):
                         schema_type = item.get('@type')
                         if isinstance(schema_type, str):
                             types_found.add(schema_type)
-                        elif isinstance(schema_type, list): # Type can be a list
+                        elif isinstance(schema_type, list):  # Type can also be a list
                             for t in schema_type:
                                 if isinstance(t, str):
                                     types_found.add(t)
-
+                        
+                        # Recursively check nested items that might have @type
+                        for value in item.values():
+                            if isinstance(value, (dict, list)):
+                                nested_types = self._extract_nested_types(value)
+                                types_found.update(nested_types)
+                                
             except json.JSONDecodeError as e:
-                logger.warning(f"Could not parse JSON-LD script: {e}")
+                # Log the beginning of the script that failed to parse
+                logger.warning(f"Could not parse JSON-LD script: {e}. Script start: {script_content[:100]}...")
                 continue
             except Exception as e:
-                 logger.warning(f"Error processing schema script: {e}")
-                 continue
+                logger.warning(f"Error processing schema script: {e}", exc_info=True)
+                continue
 
+        # Create the model instance with sorted types list
         return SchemaAnalysis(types_found=sorted(list(types_found)))
+
+    def _extract_nested_types(self, data: Union[Dict, List]) -> Set[str]:
+        """
+        Recursively extracts @type values from nested dictionaries and lists.
+        
+        Args:
+            data: Dictionary or list that might contain nested @type values
+            
+        Returns:
+            Set of schema types found in the nested structure
+        """
+        types: Set[str] = set()
+        
+        if isinstance(data, dict):
+            # Check for @type in current dict
+            schema_type = data.get('@type')
+            if isinstance(schema_type, str):
+                types.add(schema_type)
+            elif isinstance(schema_type, list):
+                types.update(t for t in schema_type if isinstance(t, str))
+            
+            # Recursively check all values
+            for value in data.values():
+                if isinstance(value, (dict, list)):
+                    types.update(self._extract_nested_types(value))
+                    
+        elif isinstance(data, list):
+            # Recursively check all items in list
+            for item in data:
+                if isinstance(item, (dict, list)):
+                    types.update(self._extract_nested_types(item))
+                    
+        return types
 
     def _analyze_viewport(self, selector: Selector) -> Optional[str]:
         """
@@ -680,26 +851,46 @@ class SEOAnalyzer:
 
             # Extract headings
             headings = []
+            h1_count = 0
+            h2_count = 0
+            h3_count = 0
+            
             for level in range(1, 7):  # h1 to h6
                 for heading in selector.css(f'h{level}::text').getall():
                     heading_text = heading.strip()
-                    headings.append(HeadingDetail(
-                        level=level,
-                        text=heading_text,
-                        contains_keyword=keyword.lower() in heading_text.lower()
-                    ))
+                    if heading_text:
+                        headings.append(HeadingDetail(
+                            level=level,
+                            text=heading_text,
+                            contains_keyword=keyword.lower() in heading_text.lower()
+                        ))
+                        if level == 1:
+                            h1_count += 1
+                        elif level == 2:
+                            h2_count += 1
+                        elif level == 3:
+                            h3_count += 1
 
             # Extract links
             links = []
+            internal_links = 0
+            external_links = 0
             for link in selector.css('a[href]'):
                 href = link.css('::attr(href)').get()
                 if href:
                     if href.startswith('/'):
                         href = urljoin(url, href)
                     links.append(href)
+                    if urlparse(href).netloc == urlparse(url).netloc:
+                        internal_links += 1
+                    else:
+                        external_links += 1
 
             # Extract images
             images = []
+            image_count = 0
+            alts_missing = 0
+            alts_with_keyword = 0
             for img in selector.css('img'):
                 src = img.css('::attr(src)').get()
                 alt = img.css('::attr(alt)').get() or ''
@@ -707,6 +898,11 @@ class SEOAnalyzer:
                     if src.startswith('/'):
                         src = urljoin(url, src)
                     images.append({'src': src, 'alt': alt})
+                    image_count += 1
+                    if not alt:
+                        alts_missing += 1
+                    elif keyword.lower() in alt.lower():
+                        alts_with_keyword += 1
 
             # Extract schema markup
             schema_data = []
@@ -803,9 +999,12 @@ class SEOAnalyzer:
                 h1=h1_headings,
                 h2=h2_headings,
                 h3=h3_headings,
-                h1_count=len(h1_headings),
+                h1_count=h1_count,
                 h1_contains_keyword=any(h.contains_keyword for h in h1_headings),
-                h2_keywords=[]  # TODO: Implement if needed
+                h2_count=h2_count,
+                h2_contains_keyword_count=sum(1 for h in h2_headings if h.contains_keyword),
+                h2_keywords=[h.text for h in h2_headings if h.contains_keyword],
+                total_headings=len(headings)
             )
 
             content_analysis = ContentAnalysis(
@@ -817,18 +1016,15 @@ class SEOAnalyzer:
 
             links_analysis = LinksAnalysis(
                 total_links=len(links),
-                internal_links=len([l for l in links if urlparse(l).netloc == urlparse(url).netloc]),
-                external_links=len([l for l in links if urlparse(l).netloc != urlparse(url).netloc]),
+                internal_links=internal_links,
+                external_links=external_links,
                 broken_links=[]  # Would require additional requests to verify
             )
 
             images_analysis = ImagesAnalysis(
-                image_count=len(images),
-                alts_missing=len([img for img in images if not img['alt']]),
-                alts_with_keyword=len([
-                    img for img in images
-                    if keyword_lower in img['alt'].lower()
-                ]),
+                image_count=image_count,
+                alts_missing=alts_missing,
+                alts_with_keyword=alts_with_keyword,
                 images=images
             )
 
@@ -1116,133 +1312,116 @@ class SEOAnalyzer:
         keyword: str,
         country: Optional[str] = None,
         max_competitors: int = 10,
-        request_id: str = 'N/A'  # Add request_id parameter with a default
+        request_id: str = 'N/A',
+        force_refresh: bool = False
     ) -> Dict[str, Any]:
         """
-        Orchestrates the full analysis. Returns a dictionary suitable for API response.
+        Analyze a page and benchmark it against competitors.
         
         Args:
-            url: The URL to analyze
-            keyword: The target keyword for analysis
-            country: Optional country code for SERP results
+            url: Target URL to analyze
+            keyword: Target keyword
+            country: Two-letter country code (optional)
             max_competitors: Maximum number of competitors to analyze
-            request_id: Unique identifier for request tracing and logging
-        """
-        logger.info(f"[{request_id}] Starting comprehensive analysis for {url}")
-        cache_key_segment = f"{keyword}_{country or self.default_country}"
-
-        # Check cache first
-        cached_result = self.cache.get(url, cache_key_segment)
-        if cached_result:
-            return cached_result
-
-        # Initialize final result structure
-        final_result: Dict[str, Any] = {
-            "analysis": None,
-            "competitor_analysis_summary": [],
-            "status": "error",
-            "error_message": None,
-            "warning": None
-        }
-
-        target_analysis_obj: Optional[PageAnalysis] = None
-
-        try:
-            # 1. Analyze Target Page
-            logger.info(f"[{request_id}] --- Analyzing Target URL: {url} ---")
-            target_analysis_result = await self.analyze_page(url, keyword)
+            request_id: Request ID for logging
+            force_refresh: If True, bypass cache and force fresh analysis
             
-            if not target_analysis_result or target_analysis_result.get('status') == 'error':
-                error_msg = target_analysis_result.get('message', f"Failed to analyze target URL: {url}") if target_analysis_result else f"Failed to analyze target URL: {url}"
-                logger.error(f"[{request_id}] {error_msg}")
-                final_result["error_message"] = error_msg
-                return final_result
+        Returns:
+            Dict containing analysis results and benchmarks
+        """
+        try:
+            # Normalize country code
+            normalized_country = normalize_country_code(country or self.default_country)
+            logger.info(f"[{request_id}] Using normalized country code: {normalized_country}")
+            
+            # Generate cache key
+            cache_key = f"{url}_{keyword}_{normalized_country}"
+            
+            # Check cache unless force refresh is requested
+            if not force_refresh:
+                cached_result = self.cache.get(url, cache_key)
+                if cached_result:
+                    logger.info(f"[{request_id}] Returning cached analysis for {url}")
+                    return {
+                        'status': 'success',
+                        **cached_result
+                    }
+            else:
+                logger.info(f"[{request_id}] Force refresh requested, bypassing cache")
 
-            target_analysis_obj = target_analysis_result.get('analysis')
-            if not isinstance(target_analysis_obj, PageAnalysis):
-                error_msg = f"Invalid analysis object returned for target URL: {url}"
-                logger.error(f"[{request_id}] {error_msg}")
-                final_result["error_message"] = error_msg
-                return final_result
-
-            logger.info(f"[{request_id}] Successfully analyzed target page {url}")
-
-            # 2. Fetch SERP Results
-            logger.info(f"[{request_id}] --- Fetching Competitors from SERP for Keyword: {keyword} in {country or self.default_country} ---")
-            competitor_urls_from_serp: List[str] = []
-            serp_error = None
-            try:
-                serp_results = await self.fetch_serp_results(keyword, country)
-                target_netloc = urlparse(url).netloc.replace('www.', '')
-                competitor_urls_from_serp = [
-                    res.url for res in serp_results
-                    if res.url and urlparse(res.url).netloc.replace('www.', '') != target_netloc
-                ][:max_competitors]
-                logger.info(f"[{request_id}] Found {len(competitor_urls_from_serp)} competitor URLs from SERP.")
-            except SerpApiError as e:
-                serp_error = f"Could not fetch SERP results: {e}"
-                logger.error(f"[{request_id}] {serp_error}")
-                final_result["warning"] = serp_error
-
-            # 3. Analyze Competitors Concurrently
-            competitor_analyses_objs: List[PageAnalysis] = []
-            if competitor_urls_from_serp:
-                logger.info(f"[{request_id}] --- Analyzing {len(competitor_urls_from_serp)} Competitor URLs Concurrently ---")
-                tasks = []
-                async with asyncio.TaskGroup() as tg:
-                    for comp_url in competitor_urls_from_serp:
-                        tasks.append(tg.create_task(self.analyze_page(comp_url, keyword)))
-
-                # Collect results
-                for i, task in enumerate(tasks):
-                    comp_url = competitor_urls_from_serp[i]
-                    try:
-                        result = task.result()
-                        if isinstance(result, dict) and result.get('status') == 'success':
-                            comp_analysis = result.get('analysis')
-                            if isinstance(comp_analysis, PageAnalysis):
-                                competitor_analyses_objs.append(comp_analysis)
-                            else:
-                                logger.warning(f"[{request_id}] Invalid analysis object for competitor {comp_url}")
-                        else:
-                            logger.warning(f"[{request_id}] Failed to analyze competitor {comp_url}: {result.get('message') if isinstance(result, dict) else str(result)}")
-                    except Exception as e:
-                        logger.warning(f"[{request_id}] Exception analyzing competitor {comp_url}: {e}")
-
-            # 4. Benchmark Analysis
-            logger.info(f"[{request_id}] --- Performing Benchmark Analysis ---")
-            benchmarks_dict = self.benchmark_analysis(target_analysis_obj, competitor_analyses_objs)
-
-            # 5. Generate Recommendations
-            logger.info(f"[{request_id}] --- Generating Recommendations ---")
-            recommendations_list = self.generate_recommendations(target_analysis_obj, benchmarks_dict)
-
-            # 6. Prepare final successful response structure
-            competitor_summary = [{
-                "url": comp_obj.url,
-                "title_length": comp_obj.title.length if comp_obj.title else 0,
-                "word_count": comp_obj.content.word_count if comp_obj.content else 0,
-            } for comp_obj in competitor_analyses_objs
-            ]
-
-            # Create the final analysis dictionary
-            final_target_analysis_dict = target_analysis_obj.model_dump(mode='json')
-            final_target_analysis_dict["benchmarks"] = benchmarks_dict
-            final_target_analysis_dict["recommendations"] = recommendations_list
-
-            # Populate the overall result
-            final_result["analysis"] = final_target_analysis_dict
-            final_result["competitor_analysis_summary"] = competitor_summary
-            final_result["status"] = "success"
-
-            logger.info(f"[{request_id}] Analysis completed successfully for {url}")
-            self.cache.set(url, cache_key_segment, final_result)
-            return final_result
-
+            # Fetch SERP results first to get competitors
+            logger.info(f"[{request_id}] Fetching SERP results for '{keyword}' in {normalized_country}")
+            serp_results = await self.fetch_serp_results(keyword, normalized_country)
+            
+            if not serp_results:
+                raise ValueError(f"No SERP results found for keyword '{keyword}' in {normalized_country}")
+            
+            # Filter out the target URL and limit competitors
+            competitor_urls = [
+                result.url for result in serp_results
+                if result.url.lower() != url.lower()
+            ][:max_competitors]
+            
+            # Analyze target page
+            logger.info(f"[{request_id}] Analyzing target page: {url}")
+            target_analysis = await self.analyze_page(url, keyword)
+            
+            if not target_analysis:
+                raise ValueError(f"Failed to analyze target page: {url}")
+            
+            # Analyze competitors
+            logger.info(f"[{request_id}] Analyzing {len(competitor_urls)} competitors")
+            competitor_analyses = []
+            for comp_url in competitor_urls:
+                try:
+                    comp_analysis = await self.analyze_page(comp_url, keyword)
+                    if comp_analysis:
+                        competitor_analyses.append(comp_analysis)
+                except Exception as e:
+                    logger.error(f"[{request_id}] Error analyzing competitor {comp_url}: {str(e)}")
+                    continue
+                
+            # Generate benchmarks
+            logger.info(f"[{request_id}] Generating benchmarks from {len(competitor_analyses)} competitor analyses")
+            benchmarks = self.benchmark_analysis(target_analysis, competitor_analyses)
+            
+            # Generate recommendations
+            logger.info(f"[{request_id}] Generating recommendations")
+            recommendations = self.generate_recommendations(target_analysis, benchmarks)
+            
+            # Prepare competitor summary
+            competitor_summary = []
+            for comp in competitor_analyses:
+                try:
+                    summary = {
+                        'url': comp.get('url'),
+                        'title_length': comp.get('title', {}).get('length'),
+                        'word_count': comp.get('content', {}).get('word_count'),
+                        'keyword_density': comp.get('content', {}).get('keyword_density')
+                    }
+                    competitor_summary.append(summary)
+                except Exception as e:
+                    logger.error(f"[{request_id}] Error creating competitor summary: {str(e)}")
+                    continue
+                
+            # Construct final response
+            result = {
+                'status': 'success',
+                'analysis': target_analysis,
+                'competitor_analysis_summary': competitor_summary,
+                'benchmarks': benchmarks,
+                'recommendations': recommendations
+            }
+            
+            # Cache the results
+            logger.info(f"[{request_id}] Caching analysis results")
+            self.cache.set(url, cache_key, result)
+            
+            return result
+            
         except Exception as e:
-            logger.error(f"[{request_id}] Critical error in analyze_page_with_benchmarks for {url}: {e}", exc_info=True)
-            final_result["status"] = "error"
-            final_result["error_message"] = f"Unexpected internal error: {e}"
-            final_result["analysis"] = None
-            final_result["competitor_analysis_summary"] = []
-            return final_result 
+            logger.error(f"[{request_id}] Error in analyze_page_with_benchmarks: {str(e)}", exc_info=True)
+            return {
+                'status': 'error',
+                'error_message': str(e)
+            } 

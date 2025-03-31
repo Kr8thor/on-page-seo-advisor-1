@@ -66,8 +66,7 @@ class ImagesAnalysis(BaseModel):
 
 class SchemaAnalysis(BaseModel):
     """Analysis results for schema markup."""
-    types_found: List[str] = []
-    schema_data: List[Dict[str, Any]] = []
+    types_found: List[str] = Field(default_factory=list, description="List of unique @type values found in JSON-LD scripts.")
 
 class PerformanceAnalysis(BaseModel):
     """Analysis results for page performance metrics."""
@@ -159,8 +158,7 @@ class PageAnalysis(BaseModel):
                     ]
                 },
                 "schema": {
-                    "types_found": ["Article", "WebPage"],
-                    "schema_data": []
+                    "types_found": ["Article", "WebPage"]
                 },
                 "viewport_content": "width=device-width, initial-scale=1.0",
                 "canonical_url": "https://example.com/canonical-page",

@@ -19,6 +19,7 @@ from parsel import Selector
 import statistics
 import aiohttp
 import pydantic
+from pydantic_core import to_jsonable_python
 
 # Import models from the models file
 from src.models import (
@@ -87,50 +88,66 @@ class Cache:
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(exist_ok=True)
 
-    def _get_cache_key(self, url: str, keyword: str) -> str:
-        """Generate a cache key from URL and keyword."""
-        # Simple slugify and hash might be better for filenames
-        url_slug = re.sub(r'[^a-z0-9]+', '-', urlparse(url).netloc + urlparse(url).path).strip('-')
-        kw_slug = re.sub(r'[^a-z0-9]+', '-', keyword.lower()).strip('-')
-        # Limit length to avoid issues with long filenames
-        return f"{url_slug[:50]}_{kw_slug[:50]}"
+    def _get_cache_key(self, url: str, cache_key_segment: str) -> str:
+        """Generate a cache key from URL and additional segment."""
+        # Clean URL and segment for safe filename
+        url_part = re.sub(r'[^\w]', '_', url)
+        segment_part = re.sub(r'[^\w]', '_', cache_key_segment)
+        return f"{url_part}_{segment_part}"
 
-    def get(self, url: str, keyword: str) -> Optional[Dict[str, Any]]:
-        """Get cached analysis results if they exist and are not expired."""
-        cache_key = self._get_cache_key(url, keyword)
+    def get(self, url: str, cache_key_segment: str) -> Optional[Dict[str, Any]]:
+        """
+        Retrieve cached analysis results if they exist and are not expired.
+        """
+        cache_key = self._get_cache_key(url, cache_key_segment)
         cache_file = self.cache_dir / f"{cache_key}.json"
 
-        if not cache_file.exists():
-            logger.info(f"Cache miss for {url} | {keyword}")
-            return None
-
         try:
-            mod_time = datetime.fromtimestamp(cache_file.stat().st_mtime)
-            if datetime.now() - mod_time > CACHE_DURATION:
-                logger.info(f"Cache expired for {url} | {keyword}")
-                cache_file.unlink() # Remove expired file
+            if not cache_file.exists():
                 return None
 
             with open(cache_file, 'r', encoding='utf-8') as f:
                 cached_data = json.load(f)
-            logger.info(f"Cache hit for {url} | {keyword}")
-            return cached_data # Return the full PageAnalysis dict
+                logger.info(f"Retrieved cached analysis for {url} | {cache_key_segment}")
+                return cached_data
+
         except Exception as e:
-            logger.error(f"Error reading cache file {cache_file}: {str(e)}")
+            logger.error(f"Error reading cache file {cache_file}: {e}", exc_info=True)
             return None
 
-    def set(self, url: str, keyword: str, data: Dict[str, Any]):
-        """Cache analysis results (which should be a PageAnalysis dict)."""
-        cache_key = self._get_cache_key(url, keyword)
+    def set(self, url: str, cache_key_segment: str, data_to_cache: Dict[str, Any]):
+        """
+        Cache analysis results dictionary with timestamp, ensuring Pydantic models are serialized.
+        """
+        cache_key = self._get_cache_key(url, cache_key_segment)  # Use the segment passed
         cache_file = self.cache_dir / f"{cache_key}.json"
 
         try:
+            # --- Prepare data for JSON serialization ---
+            # We assume data_to_cache is the dictionary containing potentially nested Pydantic models
+            # We need a way to convert these models within the dict to plain dicts/lists
+            # Pydantic v2+ provides model_dump_json which is ideal, but json.dump with a default handler works too.
+
+            # Method 1: Using json.dump with Pydantic's default function (Recommended if Pydantic v1/v2)
+            # Pydantic models often have a .__json_encoder__ or similar method usable by json.dump's default
+            def pydantic_serializer(obj):
+                # This function tells json.dump how to handle non-standard objects
+                # For Pydantic V2+, use its recommended serialization helper
+                try:
+                    # This converts Pydantic models within the structure to JSON-compatible python types
+                    return to_jsonable_python(obj)
+                except Exception:
+                    # Fallback or raise error if obj isn't Pydantic or serializable
+                    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
             with open(cache_file, 'w', encoding='utf-8') as f:
-                # Store the PageAnalysis dict directly
-                json.dump(data, f, indent=2, ensure_ascii=False)
-            logger.info(f"Cached analysis for {url} | {keyword}")
+                # Use Method 1 (Recommended): Pass the default serializer to json.dump
+                json.dump(data_to_cache, f, indent=2, ensure_ascii=False, default=pydantic_serializer)
+
+            logger.info(f"Cached analysis for {url} | {cache_key_segment}")
+
         except Exception as e:
-            logger.error(f"Error writing cache file {cache_file}: {str(e)}")
+            logger.error(f"Error writing cache file {cache_file}: {e}", exc_info=True)
 
 class SerpApiError(Exception):
     """Custom exception for SERP API related errors."""

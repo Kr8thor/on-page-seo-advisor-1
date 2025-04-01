@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>On-Page SEO Analyzer & Advisor</title>
+    <meta name="description" content="Analyze your web pages for SEO optimization and get actionable recommendations.">
+    
+    <!-- Favicon -->
+    <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
+    
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    
+    <!-- Styles -->
+    <link rel="stylesheet" href="css/style.css">
+    
+    <!-- Chart.js for benchmarks visualization -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header class="page-header">
+            <h1>On-Page SEO Analyzer & Advisor</h1>
+            <p class="subtitle">Get comprehensive SEO analysis and actionable recommendations for your web pages</p>
+        </header>
+
+        <form id="seoForm" class="seo-form">
+            <div class="form-group">
+                <label for="url">Website URL</label>
+                <input type="url" id="url" class="form-input" placeholder="https://example.com" required>
+            </div>
+            
+            <div class="form-group">
+                <label for="keyword">Target Keyword</label>
+                <input type="text" id="keyword" class="form-input" placeholder="Enter your target keyword" required>
+            </div>
+            
+            <div class="form-group">
+                <label for="country">Country (Optional)</label>
+                <input type="text" id="country" class="form-input" placeholder="e.g., us, gb, ca" maxlength="2">
+            </div>
+
+            <button type="submit" class="cta-button">
+                <span>Analyze Page</span>
+            </button>
+        </form>
+
+        <div id="loadingIndicator" class="loading-indicator" style="display: none;">
+            <div class="spinner"></div>
+            <p class="loading-text">Analyzing your page...</p>
+        </div>
+
+        <div id="errorMessage" class="error-message" style="display: none;"></div>
+
+        <div id="resultsSection" class="results-section" style="display: none;">
+            <!-- Results will be dynamically inserted here -->
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="js/script.js"></script>
+</body>
+</html> 

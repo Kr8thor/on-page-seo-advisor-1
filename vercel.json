@@ -1,5 +1,4 @@
 {
-    // Frontend deployment configuration
     "version": 2,
     "builds": [
         {

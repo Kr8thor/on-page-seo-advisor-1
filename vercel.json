@@ -1,5 +1,6 @@
 {
     "version": 2,
+    "description": "Frontend deployment configuration",
     "builds": [
         {
             "src": "*.html",

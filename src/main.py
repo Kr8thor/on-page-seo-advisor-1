@@ -56,17 +56,23 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://audit.mardenseo.com",
-        "http://audit.mardenseo.com",
-        "https://onpage-seo-analyzer.vercel.app",
-        "http://localhost:3000",
-        "http://localhost:5000"
+        "https://audit.mardenseo.com",  # Production domain
+        "http://audit.mardenseo.com",   # Production domain (HTTP)
+        "https://onpage-seo-analyzer.vercel.app",  # Vercel preview
+        "https://on-page-seo-advisor-1.vercel.app",  # Vercel production
+        "https://on-page-seo-advisor-1-5beemvolg-leo-corbetts-projects.vercel.app",  # Vercel deployment
+        "http://localhost:8000",        # Local development
+        "http://localhost:3000",        # Local development
+        "http://localhost:5000",        # Local development
+        "http://127.0.0.1:8000",       # Local development
+        "http://127.0.0.1:3000",       # Local development
+        "http://127.0.0.1:5000"        # Local development
     ],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=["*"],
-    max_age=3600
+    allow_credentials=True,            # Allow credentials (cookies, authorization headers)
+    allow_methods=["*"],               # Allow all methods
+    allow_headers=["*"],               # Allow all headers
+    expose_headers=["*"],              # Expose all headers
+    max_age=3600                       # Cache preflight requests for 1 hour
 )
 
 # Verify required environment variables

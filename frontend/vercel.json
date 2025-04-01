@@ -36,14 +36,17 @@
       "continue": true
     },
     {
+      "handle": "filesystem"
+    },
+    {
       "src": "/(.*)",
+      "dest": "/index.html",
       "headers": {
         "cache-control": "public, max-age=0, must-revalidate",
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type"
-      },
-      "continue": true
+      }
     }
   ],
   "env": {

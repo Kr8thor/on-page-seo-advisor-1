@@ -18,22 +18,22 @@
             "use": "@vercel/static"
         }
     ],
-    "routes": [
+    "rewrites": [
         {
-            "src": "/css/(.*)",
-            "dest": "/css/$1"
+            "source": "/css/:path*",
+            "destination": "/css/:path*"
         },
         {
-            "src": "/js/(.*)",
-            "dest": "/js/$1"
+            "source": "/js/:path*",
+            "destination": "/js/:path*"
         },
         {
-            "src": "/assets/(.*)",
-            "dest": "/assets/$1"
+            "source": "/assets/:path*",
+            "destination": "/assets/:path*"
         },
         {
-            "src": "/(.*)",
-            "dest": "/index.html"
+            "source": "/(.*)",
+            "destination": "/index.html"
         }
     ],
     "headers": [
